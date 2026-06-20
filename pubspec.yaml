@@ -1,0 +1,109 @@
+name: chow_sa
+description: AI-powered South African recipe scraper.
+publish_to: none
+version: 1.0.2+3
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_generative_ai: ^0.4.6   # Gemini SDK — used by ScraperService
+  image_picker: ^1.1.2           # Camera + gallery access for recipe photo scanning
+  shared_preferences: ^2.3.3     # Persists chef's notes, settings, and shopping lists
+  share_plus: ^10.1.4            # Native OS share sheet — list export & PDF sharing
+  supabase_flutter: ^2.12.4
+  http: ^1.2.2                   # HTTP client for loadshedding API calls
+  geolocator: ^13.0.1            # Location permission for loadshedding area detection
+  pdf: ^3.11.1                   # PDF generation for shopping list export
+  printing: ^5.13.2              # PDF preview + native share sheet for PDF files
+  path_provider: ^2.1.4          # Temp directory for PDF file writing
+  dotlottie_loader: ^0.0.3       # Loads .lottie files for the fire animation
+  lottie: ^3.1.0                 # Renders Lottie animations
+  url_launcher: ^6.3.1           # Opens Play Store for rating + mailto for feedback
+  table_calendar: ^3.0.9         # Month calendar view for the Meal Planner —
+                                 # day-level dots + tap-to-open daily plan.
+  in_app_review: ^2.0.9          # Native Play Store review prompt for star tap
+  google_fonts: ^6.2.1           # Free Google Fonts — downloaded at runtime, no assets needed
+  flutter_local_notifications: ^17.2.3   # Native OS notifications — event reminders (2h pre-event)
+  timezone: ^0.9.4               # Required by flutter_local_notifications for zonedSchedule()
+  android_intent_plus: ^5.1.0    # Opens exact system Settings pages (exact-alarm toggle)
+  google_mobile_ads: ^5.2.0      # AdMob — rewarded ads gate free-tier daily quota
+  firebase_core: ^3.6.0          # FCM bootstrap — required by firebase_messaging
+  firebase_messaging: ^15.1.3    # Push notifications (kitchen invites, list shares, meal plans)
+  firebase_crashlytics: ^4.1.3   # Crash reporting — wired in main.dart to FlutterError
+                                 # and PlatformDispatcher.onError so every fatal +
+                                 # zone error lands in the Firebase console.
+  # in_app_purchase: removed for v1.0 — re-add when Play Billing
+  # lands in v1.1 (chowsa_pro_monthly subscription SKU). Receipt
+  # verification will happen server-side via a verify_play_purchase
+  # edge function.
+  # flutter_local_notifications already declared above (^17.2.3) — used as
+  # the foreground notification surface for FCM onMessage payloads.
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.1   # Generates Android adaptive + iOS sized
+                                    # launcher icons from a single source PNG.
+  flutter_native_splash: ^2.4.6     # Generates the native (Android 12+ themed
+                                    # icon + legacy splash) splash screen so
+                                    # cold-boot doesn't show a white flash.
+
+# ── Launcher icon configuration ───────────────────────────────────────────────
+# Run `flutter pub run flutter_launcher_icons` after replacing
+# assets/icon/app_icon.png to regenerate every density.
+#
+# Source PNG must be 1024x1024, RGB (NO transparency — iOS rejects alpha
+# in app icons and Play Store flags it). The adaptive_icon_background is
+# the deep forest green ChowSA uses elsewhere; adaptive_icon_foreground is
+# a transparent-padded version of the cauldron so Android can apply its
+# circular/squircle/teardrop mask without clipping the cauldron's body.
+flutter_launcher_icons:
+  android: true
+  ios:     true
+  # MAIN icon (iOS + legacy Android pre-26 launchers). White background,
+  # full ChowSA branded mark. No transparency — iOS rejects alpha.
+  image_path: 'assets/icon/app_icon.png'
+  remove_alpha_ios: true
+  min_sdk_android: 21
+  # ADAPTIVE icon — Android 8+ (API 26+). Foreground is the transparent
+  # branded mark; Android composites it over the background colour below
+  # and applies the launcher's mask (circle / squircle / teardrop).
+  # Cream background matches the icon's design and the app theme.
+  adaptive_icon_background: '#FFFFFF'
+  adaptive_icon_foreground: 'assets/icon/app_icon_foreground.png'
+  web:
+    generate: false
+  windows:
+    generate: false
+
+# ── Native splash screen ──────────────────────────────────────────────────────
+# Run `dart run flutter_native_splash:create` after changing any of these.
+# The transparent foreground icon sits centred on the cream brand background
+# (Android 12+ uses the system splash spec; older Android + iOS get the
+# legacy full-bleed splash). dark_* mirrors the same look for dark mode so
+# the splash doesn't flash white during the OS-controlled handoff.
+flutter_native_splash:
+  # ChowSA cream — matches the in-app background so the splash → first frame
+  # handoff has no colour flash. Same value for dark mode so users in dark
+  # system theme still get the brand cream during the brief splash window.
+  color: "#F4F1EA"
+  image: assets/icon/app_icon_foreground.png
+  color_dark: "#F4F1EA"
+  image_dark: assets/icon/app_icon_foreground.png
+  android_12:
+    image: assets/icon/app_icon_foreground.png
+    color: "#F4F1EA"
+    image_dark: assets/icon/app_icon_foreground.png
+    color_dark: "#F4F1EA"
+  android: true
+  ios: true
+  web: false
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/splash_bg.png
+    - assets/images/fire.lottie
+    - assets/avatars/
+    - assets/animations/

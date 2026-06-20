@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "703850334339",
+    "project_id": "chowsa-1bcd9",
+    "storage_bucket": "chowsa-1bcd9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:703850334339:android:e6daef272096f8ad3ef3b6",
+        "android_client_info": {
+          "package_name": "za.co.chowsa.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDnILlPMEKBZzhGCNm8hKL7larH2TB4Pbs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- ChowSA forest-green — tints the monochrome notification icon so
+         the silhouette pops on the lock screen instead of disappearing
+         against a white wallpaper. -->
+    <color name="notification_tint">#0C351E</color>
+</resources>

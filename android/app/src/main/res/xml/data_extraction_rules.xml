@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31+) backup + transfer rules. Two scopes:
+    cloud-backup       — Google Drive auto-backup (off by default if no rules)
+    device-transfer    — direct device-to-device migration
+  Both exclude the credential-shaped data that must be re-issued post-restore.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="FlutterSecureStorage.xml" />
+        <exclude domain="sharedpref" path="io.supabase.cache.xml" />
+        <exclude domain="sharedpref" path="com.google.firebase.messaging.xml" />
+        <exclude domain="file" path="supabase_session.json" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="FlutterSecureStorage.xml" />
+        <exclude domain="sharedpref" path="io.supabase.cache.xml" />
+        <exclude domain="sharedpref" path="com.google.firebase.messaging.xml" />
+        <exclude domain="file" path="supabase_session.json" />
+    </device-transfer>
+</data-extraction-rules>

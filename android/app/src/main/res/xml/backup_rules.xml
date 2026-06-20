@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android Auto Backup (API ≤ 30) rules.
+  Excludes anything user-credential-shaped from the Google Drive backup blob.
+  Supabase JWTs, FCM tokens, and ad identifiers should NEVER survive a
+  device-switch restore — they're per-install/per-account and must be
+  re-issued by their respective services.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="FlutterSecureStorage.xml" />
+    <exclude domain="sharedpref" path="io.supabase.cache.xml" />
+    <exclude domain="sharedpref" path="com.google.firebase.messaging.xml" />
+    <exclude domain="file" path="supabase_session.json" />
+</full-backup-content>
