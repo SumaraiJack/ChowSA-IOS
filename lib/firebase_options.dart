@@ -59,21 +59,21 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyAWCRu0ybOA-BKb9Son_BtCNwvy602Qio0',
-    appId: '1:703850334339:ios:fb8427ca48c587c43ef3b6',
+    apiKey: 'AIzaSyBPwqqDZayyiU_CPYwGM5sUwk7T55oaNMk',
+    appId: '1:703850334339:ios:8852a14468dbcb613ef3b6',
     messagingSenderId: '703850334339',
     projectId: 'chowsa-1bcd9',
     storageBucket: 'chowsa-1bcd9.firebasestorage.app',
-    iosBundleId: 'com.example.chowSa',
+    iosBundleId: 'za.co.chowsa.app',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'AIzaSyAWCRu0ybOA-BKb9Son_BtCNwvy602Qio0',
-    appId: '1:703850334339:ios:fb8427ca48c587c43ef3b6',
+    apiKey: 'AIzaSyBPwqqDZayyiU_CPYwGM5sUwk7T55oaNMk',
+    appId: '1:703850334339:ios:8852a14468dbcb613ef3b6',
     messagingSenderId: '703850334339',
     projectId: 'chowsa-1bcd9',
     storageBucket: 'chowsa-1bcd9.firebasestorage.app',
-    iosBundleId: 'com.example.chowSa',
+    iosBundleId: 'za.co.chowsa.app',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
