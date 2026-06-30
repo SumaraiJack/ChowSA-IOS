@@ -5,6 +5,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/ingredient.dart';
 import '../models/recipe.dart';
@@ -453,27 +456,53 @@ class _PantryScreenState extends State<PantryScreen> {
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
+          padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const _Header(),
+              // 1. Hero card — kept; already matches the Home hero.
+              //    The three cooking-mode chips (Emergency / Budget /
+              //    Data Saver) now ride inside the header card so they
+              //    sit at the top of the screen instead of below the
+              //    pantry list.
+              _Header(
+                footer: _ContextChipRow(
+                  isEmergencyMode: _isEmergencyMode,
+                  isBudgetMode:    _isBudgetMode,
+                  isDataSaver:     _isDataSaver,
+                  budgetCeiling:   _budgetCeiling,
+                  onToggleEmergency: _toggleEmergencyMode,
+                  onToggleBudget:    _toggleBudgetMode,
+                  onToggleDataSaver: _toggleDataSaver,
+                ),
+              ),
               const SizedBox(height: 16),
 
-              // ── Hyper-local context chip row ─────────────────────────────
-              _ContextChipRow(
-                isEmergencyMode: _isEmergencyMode,
-                isBudgetMode:    _isBudgetMode,
-                isDataSaver:     _isDataSaver,
-                budgetCeiling:   _budgetCeiling,
-                onToggleEmergency: _toggleEmergencyMode,
-                onToggleBudget:    _toggleBudgetMode,
-                onToggleDataSaver: _toggleDataSaver,
+              // 2. Green scan hero — promotes scanning to a primary card,
+              //    matching the Weekly Meal Planner / Generate Recipe heroes
+              //    on Chow Home. Two chips inside (Camera · Gallery).
+              _ScanHero(
+                enabled:       !loading && !scanning,
+                onScanFridge:  _scanFridge,
+                onScanGallery: _scanGallery,
               ),
+              const SizedBox(height: 16),
 
-              // ── Combined-mode survival banner ─────────────────────────────
-              // Slides in only when BOTH emergency and budget are active,
-              // giving clear feedback that the combined constraint is live.
+              // 3. Pantry list card — manual entry + chip cloud. Cream
+              //    surface matching the rest of the home/pantry family.
+              _InputCard(
+                controller:   _controller,
+                focusNode:    _focusNode,
+                pantryItems:  _pantryItems,
+                enabled:      !loading && !scanning,
+                onAdd:        _addIngredient,
+                onRemove:     _removeIngredient,
+                onClear:      _pantryItems.length > 1 ? _clearPantry : null,
+              ),
+              const SizedBox(height: 16),
+
+              // 4. Combined-mode survival banner — only when both
+              //    Emergency + Budget are active.
               AnimatedSize(
                 duration: const Duration(milliseconds: 260),
                 curve:    Curves.easeOut,
@@ -486,19 +515,7 @@ class _PantryScreenState extends State<PantryScreen> {
                     : const SizedBox.shrink(),
               ),
 
-              const SizedBox(height: 16),
-              _InputCard(
-                controller:   _controller,
-                focusNode:    _focusNode,
-                pantryItems:  _pantryItems,
-                enabled:      !loading && !scanning,
-                onAdd:        _addIngredient,
-                onRemove:     _removeIngredient,
-                onClear:      _pantryItems.length > 1 ? _clearPantry : null,
-                onScanFridge: _scanFridge,
-                onScanGallery: _scanGallery,
-              ),
-              const SizedBox(height: 28),
+              const SizedBox(height: 22),
               _buildBody(),
             ],
           ),
@@ -518,6 +535,10 @@ class _PantryScreenState extends State<PantryScreen> {
           recipes:             recipes,
           onRegenerate:        _generate,
           onAddToShoppingList: widget.onAddToShoppingList,
+          // Used by each card to mark ingredients the user does NOT
+          // currently have in the pantry — so they know exactly what to
+          // pick up before cooking.
+          pantryItems:         List.unmodifiable(_pantryItems),
         ),
       };
 }
@@ -546,7 +567,12 @@ final class _Success extends _ScreenState {
 // =============================================================================
 
 class _Header extends StatelessWidget {
-  const _Header();
+  const _Header({this.footer});
+
+  /// Optional widget tucked inside the bottom of the cream hero card.
+  /// Used by the parent state to render the cooking-mode chip row
+  /// (Emergency / Budget / Data Saver) inside the same surface.
+  final Widget? footer;
 
   @override
   Widget build(BuildContext context) {
@@ -637,6 +663,10 @@ class _Header extends StatelessWidget {
             fontWeight: FontWeight.w400,
           ),
         ),
+        if (footer != null) ...[
+          const SizedBox(height: 14),
+          footer!,
+        ],
             ],
           ),
         ),
@@ -644,6 +674,7 @@ class _Header extends StatelessWidget {
     );
   }
 }
+
 
 // =============================================================================
 // _BubblingPot — header accent card for Smart Pantry
@@ -737,8 +768,6 @@ class _InputCard extends StatelessWidget {
     required this.onAdd,
     required this.onRemove,
     required this.onClear,
-    required this.onScanFridge,
-    required this.onScanGallery,
   });
 
   final TextEditingController controller;
@@ -748,8 +777,6 @@ class _InputCard extends StatelessWidget {
   final VoidCallback          onAdd;
   final void Function(String) onRemove;
   final VoidCallback?         onClear;
-  final VoidCallback          onScanFridge;
-  final VoidCallback          onScanGallery;
 
   @override
   Widget build(BuildContext context) {
@@ -812,62 +839,6 @@ class _InputCard extends StatelessWidget {
           ),
 
           const SizedBox(height: 12),
-
-          // ── Twin bento tiles — Scan Fridge + Upload from Gallery ───────
-          // Equal-width tiles render side-by-side so the two primary "where
-          // does my ingredient list come from?" entry points share the same
-          // visual weight. Mirrors the bento grid style on Chow Home.
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: _PantryActionTile(
-                    icon:        Icons.camera_alt_rounded,
-                    title:       'Scan Fridge',
-                    subtitle:    'AI detects ingredients',
-                    accent:      const Color(0xFF0C351E),
-                    enabled:     enabled,
-                    onTap:       onScanFridge,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _PantryActionTile(
-                    icon:        Icons.photo_library_rounded,
-                    title:       'From Gallery',
-                    subtitle:    'Use an existing photo',
-                    accent:      const Color(0xFFE59B27),
-                    enabled:     enabled,
-                    onTap:       onScanGallery,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 14),
-
-          // ── Manual entry divider ───────────────────────────────────────
-          Row(
-            children: [
-              Expanded(child: Divider(color: cs.outlineVariant.withAlpha(140))),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: Text(
-                  'or type it in',
-                  style: tt.labelSmall?.copyWith(
-                    color:         cs.onSurfaceVariant,
-                    fontWeight:    FontWeight.w700,
-                    letterSpacing: 0.6,
-                  ),
-                ),
-              ),
-              Expanded(child: Divider(color: cs.outlineVariant.withAlpha(140))),
-            ],
-          ),
-
-          const SizedBox(height: 10),
 
           // ── Text input row ─────────────────────────────────────────────────
           Row(
@@ -936,95 +907,171 @@ class _InputCard extends StatelessWidget {
 }
 
 // =============================================================================
-// _PantryActionTile — bento-style entry-point tile used by Scan / Gallery
+// _ScanHero — green hero matching the Home green-card family
 // =============================================================================
 //
-// Equal-height card with an accent-coloured icon block, two-line label,
-// and a chevron. Two of these sit side-by-side in the InputCard so the
-// Smart Pantry "where does my ingredient list come from?" surface reads as
-// one uniform deck instead of a stacked pair of mismatched buttons.
+// Promotes "Scan your fridge" to a first-class action card. Two chips
+// inside route to Camera and Gallery respectively. Disabled state mirrors
+// the parent's loading/scanning flag so the user can't fire two scans
+// concurrently.
 
-class _PantryActionTile extends StatelessWidget {
-  const _PantryActionTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.accent,
+class _ScanHero extends StatelessWidget {
+  const _ScanHero({
     required this.enabled,
-    required this.onTap,
+    required this.onScanFridge,
+    required this.onScanGallery,
   });
 
-  final IconData     icon;
-  final String       title;
-  final String       subtitle;
-  final Color        accent;
   final bool         enabled;
-  final VoidCallback onTap;
+  final VoidCallback onScanFridge;
+  final VoidCallback onScanGallery;
 
   @override
   Widget build(BuildContext context) {
-    final disabled = !enabled;
+    final tt = Theme.of(context).textTheme;
     return Opacity(
-      opacity: disabled ? 0.6 : 1.0,
-      child: Material(
-        color:        Colors.transparent,
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          onTap:        disabled ? null : onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-            decoration: BoxDecoration(
-              color:        accent.withAlpha(14),
-              borderRadius: BorderRadius.circular(16),
-              border:       Border.all(color: accent.withAlpha(60)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+      opacity: enabled ? 1.0 : 0.6,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end:   Alignment.bottomRight,
+            colors: [Color(0xFF0C351E), Color(0xFF205B4A)],
+          ),
+          boxShadow: const [
+            BoxShadow(
+                color: Color(0x33000000),
+                blurRadius: 14,
+                offset: Offset(0, 6)),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
                 Container(
-                  width: 38, height: 38,
-                  decoration: BoxDecoration(
-                    color:        accent,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
+                  width: 48, height: 48,
                   alignment: Alignment.center,
-                  child: Icon(icon, color: Colors.white, size: 20),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  title,
-                  style: TextStyle(
-                    color:      accent,
-                    fontSize:   13.5,
-                    fontWeight: FontWeight.w900,
-                    height:     1.2,
+                  decoration: BoxDecoration(
+                    color:        const Color(0xFFE59B27),
+                    borderRadius: BorderRadius.circular(14),
                   ),
+                  child: const Icon(Icons.camera_alt_rounded,
+                      color: Colors.white, size: 24),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color:    accent.withAlpha(180),
-                    fontSize: 11.5,
-                    height:   1.3,
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'SCAN YOUR FRIDGE',
+                        style: tt.labelSmall?.copyWith(
+                          color:         const Color(0xFFFFD7A8),
+                          letterSpacing: 1.4,
+                          fontWeight:    FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Snap or upload',
+                        style: tt.headlineSmall?.copyWith(
+                          color:      Colors.white,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'AI reads ingredients straight from the photo.',
+                        style: tt.bodySmall?.copyWith(
+                          color: const Color(0xFFA8D2BB),
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
-          ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: _ScanHeroChip(
+                    icon:    Icons.camera_alt_rounded,
+                    label:   'Camera',
+                    onTap:   enabled ? onScanFridge : null,
+                    primary: true,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ScanHeroChip(
+                    icon:    Icons.photo_library_rounded,
+                    label:   'Gallery',
+                    onTap:   enabled ? onScanGallery : null,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-// =============================================================================
-// Pantry chip
-// =============================================================================
+class _ScanHeroChip extends StatelessWidget {
+  const _ScanHeroChip({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.primary = false,
+  });
+
+  final IconData     icon;
+  final String       label;
+  final VoidCallback? onTap;
+  final bool         primary;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = primary ? const Color(0xFFE59B27) : Colors.white.withAlpha(28);
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap:        onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color:        bg,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white.withAlpha(50)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white, size: 18),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: const TextStyle(
+                color:      Colors.white,
+                fontWeight: FontWeight.w900,
+                fontSize:   13,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 
 class _PantryChip extends StatelessWidget {
   const _PantryChip({
@@ -1231,6 +1278,7 @@ class _ResultsView extends StatelessWidget {
   const _ResultsView({
     required this.recipes,
     required this.onRegenerate,
+    required this.pantryItems,
     this.onAddToShoppingList,
   });
 
@@ -1239,6 +1287,9 @@ class _ResultsView extends StatelessWidget {
   /// Passed straight to each recipe card so the "Add to Shopping List"
   /// CTA can dispatch the recipe's ingredients up to the screen's owner.
   final void Function(List<ShoppingItem>)? onAddToShoppingList;
+  /// What the user said they already had in the pantry — drives the
+  /// missing-ingredient highlight on each recipe card.
+  final List<String> pantryItems;
 
   @override
   Widget build(BuildContext context) {
@@ -1283,6 +1334,7 @@ class _ResultsView extends StatelessWidget {
             number:              i + 1,
             recipe:              recipes[i],
             onAddToShoppingList: onAddToShoppingList,
+            pantryItems:         pantryItems,
           ),
           if (i < recipes.length - 1) const SizedBox(height: 12),
         ],
@@ -1299,21 +1351,49 @@ class _PantryRecipeCard extends StatefulWidget {
   const _PantryRecipeCard({
     required this.number,
     required this.recipe,
+    required this.pantryItems,
     this.onAddToShoppingList,
   });
 
   final int    number;
   final Recipe recipe;
   final void Function(List<ShoppingItem>)? onAddToShoppingList;
+  /// Items currently in the user's pantry. Used to compute which of the
+  /// recipe's ingredients are missing — those get a "Need" chip on the
+  /// ingredient row and roll into the PDF export's shopping list.
+  final List<String> pantryItems;
 
   @override
   State<_PantryRecipeCard> createState() => _PantryRecipeCardState();
 }
 
 class _PantryRecipeCardState extends State<_PantryRecipeCard> {
-  bool _expanded = false;
-  bool _saving   = false;
-  bool _saved    = false;
+  bool _expanded     = false;
+  bool _saving       = false;
+  bool _saved        = false;
+  bool _exportingPdf = false;
+
+  /// Lower-cased ingredient names from this recipe that DON'T appear in
+  /// the user's pantry. Matching is intentionally generous: an ingredient
+  /// counts as "in pantry" if any pantry item contains its name or vice
+  /// versa (so "tomato" matches "fresh tomatoes" and "cake flour" matches
+  /// "flour"). Recomputed each build; cheap.
+  Set<String> get _missingNames {
+    final pantry = widget.pantryItems
+        .map((p) => p.toLowerCase().trim())
+        .where((p) => p.isNotEmpty)
+        .toList(growable: false);
+    if (pantry.isEmpty) return const {};
+    final missing = <String>{};
+    for (final ing in widget.recipe.ingredients) {
+      final name = ing.name.toLowerCase().trim();
+      if (name.isEmpty) continue;
+      final hit = pantry.any((p) =>
+          p == name || p.contains(name) || name.contains(p));
+      if (!hit) missing.add(name);
+    }
+    return missing;
+  }
 
   /// Pretty date used to seed the shopping-list default name.
   /// e.g. "Pantry List - 14 Jun 2026".
@@ -1362,6 +1442,123 @@ class _PantryRecipeCardState extends State<_PantryRecipeCard> {
         content:  Text('Could not save: $e'),
         behavior: SnackBarBehavior.floating,
       ));
+    }
+  }
+
+  Future<void> _exportPdf() async {
+    if (_exportingPdf) return;
+    setState(() => _exportingPdf = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // Default Helvetica can't render the unicode the recipe text relies
+      // on — ml, °, ½, ·, em-dash — so we ship NotoSans through the PDF
+      // theme. Without this the share PDF showed garbled rectangles in
+      // place of every metric unit and fraction.
+      final theme = pw.ThemeData.withFont(
+        base:        await PdfGoogleFonts.notoSansRegular(),
+        bold:        await PdfGoogleFonts.notoSansBold(),
+        italic:      await PdfGoogleFonts.notoSansItalic(),
+        boldItalic:  await PdfGoogleFonts.notoSansBoldItalic(),
+      );
+      final doc    = pw.Document(theme: theme);
+      final recipe = widget.recipe;
+      final missing = _missingNames;
+      pw.Widget bullet(String s, {bool bold = false, bool warn = false}) =>
+          pw.Padding(
+            padding: const pw.EdgeInsets.only(bottom: 3),
+            child: pw.Row(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('•  ',
+                    style: pw.TextStyle(
+                      fontWeight: pw.FontWeight.bold,
+                      color: warn ? PdfColors.deepOrange : PdfColors.black,
+                    )),
+                pw.Expanded(
+                  child: pw.Text(s,
+                      style: pw.TextStyle(
+                        fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
+                        color: warn ? PdfColors.deepOrange : PdfColors.black,
+                      )),
+                ),
+              ],
+            ),
+          );
+
+      doc.addPage(pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin:     const pw.EdgeInsets.all(36),
+        build: (_) => [
+          pw.Text(recipe.title,
+              style: pw.TextStyle(
+                fontSize:   24,
+                fontWeight: pw.FontWeight.bold,
+              )),
+          pw.SizedBox(height: 4),
+          pw.Text('ChowSA — pantry recipe',
+              style: pw.TextStyle(
+                fontSize: 11, color: PdfColors.grey700,
+              )),
+          pw.SizedBox(height: 18),
+          pw.Text('Ingredients',
+              style: pw.TextStyle(
+                fontSize:   16,
+                fontWeight: pw.FontWeight.bold,
+              )),
+          pw.SizedBox(height: 6),
+          for (final ing in recipe.ingredients)
+            bullet(
+              '${formatIngredientMeasure(ing)}  ${ing.displayName}'
+              '${missing.contains(ing.name.toLowerCase()) ? "   — NEED" : ""}',
+              warn: missing.contains(ing.name.toLowerCase()),
+            ),
+          if (missing.isNotEmpty) ...[
+            pw.SizedBox(height: 14),
+            pw.Text('Shopping list (missing ${missing.length})',
+                style: pw.TextStyle(
+                  fontSize:   14,
+                  fontWeight: pw.FontWeight.bold,
+                  color:      PdfColors.deepOrange,
+                )),
+            pw.SizedBox(height: 4),
+            for (final ing in recipe.ingredients)
+              if (missing.contains(ing.name.toLowerCase()))
+                bullet('${formatIngredientMeasure(ing)}  ${ing.displayName}'),
+          ],
+          pw.SizedBox(height: 18),
+          pw.Text('Instructions',
+              style: pw.TextStyle(
+                fontSize:   16,
+                fontWeight: pw.FontWeight.bold,
+              )),
+          pw.SizedBox(height: 6),
+          for (var i = 0; i < recipe.instructions.length; i++)
+            pw.Padding(
+              padding: const pw.EdgeInsets.only(bottom: 6),
+              child: pw.RichText(
+                text: pw.TextSpan(children: [
+                  pw.TextSpan(
+                    text:  '${i + 1}.  ',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                  ),
+                  pw.TextSpan(text: recipe.instructions[i]),
+                ]),
+              ),
+            ),
+        ],
+      ));
+
+      await Printing.sharePdf(
+        bytes:    await doc.save(),
+        filename: '${recipe.title.replaceAll(RegExp(r"[^A-Za-z0-9]+"), "_")}.pdf',
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(
+        content:  Text('Could not export PDF: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } finally {
+      if (mounted) setState(() => _exportingPdf = false);
     }
   }
 
@@ -1443,6 +1640,23 @@ class _PantryRecipeCardState extends State<_PantryRecipeCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // ── Hero image (when one was resolved) ───────────────────────
+            // Wikipedia / og:image thumbnail — shown above the card header
+            // so the user gets a real photo of the dish before they decide
+            // to expand the recipe.
+            if (_expanded && (widget.recipe.imageUrl ?? '').isNotEmpty)
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(19)),
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Image.network(
+                    widget.recipe.imageUrl!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
             // ── Card header (always visible) ─────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
@@ -1526,8 +1740,24 @@ class _PantryRecipeCardState extends State<_PantryRecipeCard> {
                             label: 'Ingredients',
                             count: widget.recipe.ingredients.length,
                           ),
+                          if (_missingNames.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6, bottom: 4),
+                              child: Text(
+                                "${_missingNames.length} "
+                                "${_missingNames.length == 1 ? 'item' : 'items'} "
+                                "not in your pantry — marked below.",
+                                style: tt.bodySmall?.copyWith(
+                                  color: const Color(0xFFB14A2A),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
                           const SizedBox(height: 12),
-                          _IngredientsList(ingredients: widget.recipe.ingredients),
+                          _IngredientsList(
+                            ingredients:  widget.recipe.ingredients,
+                            missingNames: _missingNames,
+                          ),
 
                           const SizedBox(height: 24),
                           Divider(color: cs.outlineVariant, height: 1),
@@ -1623,6 +1853,48 @@ class _PantryRecipeCardState extends State<_PantryRecipeCard> {
                               ),
                             ],
                           ),
+                          const SizedBox(height: 10),
+                          // Secondary row — Export to PDF. Compact, full
+                          // width, doesn't compete with the primary CTAs
+                          // above. Includes the missing-ingredient
+                          // shopping list inside the document.
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _exportingPdf ? null : _exportPdf,
+                              icon: _exportingPdf
+                                  ? const SizedBox(
+                                      width: 14, height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Color(0xFF0C351E),
+                                      ),
+                                    )
+                                  : const Icon(
+                                      Icons.picture_as_pdf_outlined,
+                                      size: 18),
+                              label: const Text(
+                                'Export PDF',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize:   13,
+                                ),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor:
+                                    const Color(0xFF0C351E),
+                                side: const BorderSide(
+                                  color: Color(0xFF0C351E),
+                                  width: 1.2,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     )
@@ -1651,6 +1923,12 @@ class _LoadsheddingBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Hidden per user request — loadshedding is over for now. Original
+    // body kept below so badges can be restored by removing this line
+    // if SA grid stability flips again. `friendly` flag on recipes
+    // stays intact.
+    return const SizedBox.shrink();
+    // ignore: dead_code
     final bg    = friendly ? _greenBg : _greyBg;
     final fg    = friendly ? _greenFg : _greyFg;
     // No-Power OK: battery_0_bar shows "zero mains power needed" — works for both
@@ -1690,6 +1968,9 @@ class _BraaiReadyBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Hidden per user request alongside the loadshedding badge.
+    return const SizedBox.shrink();
+    // ignore: dead_code
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
@@ -1767,9 +2048,16 @@ class _SectionHeading extends StatelessWidget {
 // =============================================================================
 
 class _IngredientsList extends StatelessWidget {
-  const _IngredientsList({required this.ingredients});
+  const _IngredientsList({
+    required this.ingredients,
+    this.missingNames = const {},
+  });
 
   final List<Ingredient> ingredients;
+  /// Lower-cased ingredient names that are NOT in the user's pantry —
+  /// those rows render a small mango "Need" chip so the user knows
+  /// exactly what to pick up before cooking.
+  final Set<String> missingNames;
 
   @override
   Widget build(BuildContext context) {
@@ -1783,7 +2071,11 @@ class _IngredientsList extends StatelessWidget {
       child: Column(
         children: [
           for (int i = 0; i < ingredients.length; i++) ...[
-            _IngredientRow(ingredient: ingredients[i]),
+            _IngredientRow(
+              ingredient: ingredients[i],
+              missing:    missingNames.contains(
+                  ingredients[i].name.toLowerCase()),
+            ),
             if (i < ingredients.length - 1)
               Divider(
                 height:     1,
@@ -1799,9 +2091,15 @@ class _IngredientsList extends StatelessWidget {
 }
 
 class _IngredientRow extends StatelessWidget {
-  const _IngredientRow({required this.ingredient});
+  const _IngredientRow({
+    required this.ingredient,
+    this.missing = false,
+  });
 
   final Ingredient ingredient;
+  /// When true the row paints a "Need" chip — drives the pantry-comparison
+  /// highlight that tells the user what they have to buy.
+  final bool missing;
 
   // SA-metric label — cups/tsp/tbsp render as ml/g via the shared
   // formatter so the in-pantry recipe row matches the recipe-detail
@@ -1849,9 +2147,43 @@ class _IngredientRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  ingredient.displayName,
-                  style: tt.bodySmall?.copyWith(fontWeight: FontWeight.w500),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        ingredient.displayName,
+                        style: tt.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w500,
+                          color: missing
+                              ? const Color(0xFFB14A2A)
+                              : null,
+                        ),
+                      ),
+                    ),
+                    if (missing) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFE9D4),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: const Color(0xFFE59B27).withAlpha(120),
+                          ),
+                        ),
+                        child: const Text(
+                          'Need',
+                          style: TextStyle(
+                            color:      Color(0xFFB14A2A),
+                            fontWeight: FontWeight.w900,
+                            fontSize:   9.5,
+                            letterSpacing: 0.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 if (_isLocalized)
                   Padding(

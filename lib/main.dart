@@ -22,10 +22,13 @@ import 'services/consent_service.dart';
 import 'services/event_reminder_service.dart';
 import 'services/local_hub_service.dart';
 import 'services/notification_service.dart';
-import 'services/world_cup_service.dart';
+import 'services/price_estimate_service.dart';
 import 'models/user_rank.dart';
 import 'state/chat_bubble_theme.dart';
 import 'state/session_controller.dart';
+import 'state/share_intent_inbox.dart';
+import 'state/vegan_mode.dart';
+import 'state/weekly_budget.dart';
 
 // =============================================================================
 // Global font notifier — any widget can listen to this and rebuild instantly
@@ -70,6 +73,24 @@ Future<void> main() async {
     anonKey: SupabaseConfig.anonKey,
   );
 
+  // Hydrate editable price baselines from Supabase so a row edit in
+  // `price_baselines` re-prices the app with no APK release. Falls back to
+  // the hardcoded keyword map on failure — see PriceEstimateService.init.
+  unawaited(PriceEstimateService.instance.init());
+
+  // Hydrate the vegan-mode toggle so the user's choice is in place by
+  // the time the first scrape / pantry generation runs.
+  unawaited(VeganMode.load());
+
+  // Hydrate the global weekly food budget so the new home-hero card shows
+  // the right number on first paint.
+  unawaited(WeeklyBudget.load());
+
+  // Share-to-ChowSA — registers the OS share-sheet receiver so URLs
+  // shared from Instagram / TikTok / YouTube / etc. flow into the
+  // scraper screen and auto-scrape. Best-effort; never blocks boot.
+  unawaited(ShareIntentInbox.instance.boot());
+
   // ── Reactive state tier ───────────────────────────────────────────────────
   // SessionController owns auth lifecycle: on sign-in it boots Inbox,
   // Community, MealPlan and SharedAssets controllers; on sign-out it tears
@@ -108,10 +129,6 @@ Future<void> main() async {
   // in the background. Permission denial is handled gracefully — the
   // CommunityHubScreen falls back to its existing suburb resolution.
   unawaited(LocalHubService.instance.bootstrap());
-
-  // World Cup feature — fetches fixture list, resolves the stadium chat
-  // channel, and arms the realtime subscription. Best-effort: never throws.
-  unawaited(WorldCupService.instance.init());
 
   // FCM push pipeline — Firebase init + permission prompt + token sync to
   // profiles.fcm_token + foreground/background handlers. Best-effort; on

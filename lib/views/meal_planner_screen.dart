@@ -18,14 +18,20 @@ import 'package:table_calendar/table_calendar.dart';
 
 import '../services/inbox_share_service.dart';
 import '../widgets/user_handle_autocomplete.dart';
+import 'pantry_screen.dart' show shoppingListsUpdateNotifier;
 import 'recipe_detail_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/ingredient.dart';
 import '../models/meal_plan.dart';
 import '../models/recipe.dart';
+import '../models/shopping_list.dart';
+import '../services/diet_meal_plan_service.dart';
 import '../services/recipe_repository.dart';
 import '../services/shared_assets_service.dart';
 import '../state/meal_plan_controller.dart';
+// _readCachedShoppingLists / _writeCachedShoppingLists are private to
+// pantry_screen, so we duplicate the tiny prefs-IO pair below rather
+// than reach into another screen's private helpers.
 
 // =============================================================================
 // Design tokens
@@ -423,6 +429,130 @@ class _MealPlannerScreenState extends State<MealPlannerScreen> {
 
   // ── Slot actions (date-scoped) ──────────────────────────────────────
 
+  // ── Diet meal-plan generator (#5) ──────────────────────────────────
+  //
+  // Opens a green-hero sheet asking for budget / days / diet / slots,
+  // hands the result to DietMealPlanService, previews it, then writes
+  // each day into _plansByDate starting from today.
+
+  Future<void> _openDietPlanSheet() async {
+    final result = await showModalBottomSheet<_DietPlanCommit>(
+      context:            context,
+      isScrollControlled: true,
+      backgroundColor:    Colors.transparent,
+      builder: (_)        => const _DietPlanSheet(),
+    );
+    if (!mounted || result == null) return;
+    // Anchor the plan to the user's currently-viewed context, not
+    // "today". When the calendar tab is open we use whichever date the
+    // user last selected; otherwise the list view's Monday-of-the-week.
+    // Previously this hard-coded DateTime.now() which dropped every
+    // generated plan onto today's week regardless of where the user
+    // was looking.
+    final anchor = _showCalendar ? _selectedDay : _visibleWeekStart;
+    final startDate = _startOfWeek(anchor);
+    final iso = (DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+    setState(() {
+      // Keep the list view in sync with the week we're writing into so
+      // the user immediately sees the new meals on switch-back.
+      _visibleWeekStart = startDate;
+      for (var i = 0; i < result.plan.days.length; i++) {
+        final day  = result.plan.days[i];
+        final date = startDate.add(Duration(days: i));
+        final plan = _planFor(iso(date));
+        for (final slot in MealSlot.values) {
+          final title = day.forSlot(slot);
+          if (title == null || title.isEmpty) continue;
+          plan.addToSlot(slot, _stubRecipe(title));
+        }
+      }
+    });
+    _savePlan();
+
+    // Optional: also push the meal titles into a new shopping list so
+    // the user has a one-tap "what to cook this week" reference in the
+    // Shopping tab. Created in shared_preferences under the same key
+    // the Shopping screen reads (`shopping_lists_v1`).
+    var shoppingCreated = false;
+    if (result.addToShoppingList) {
+      shoppingCreated = await _appendDietPlanShoppingList(result.plan);
+    }
+
+    if (mounted) {
+      final dayWord = result.plan.days.length == 1 ? 'day' : 'days';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          shoppingCreated
+              ? 'Added ${result.plan.days.length} $dayWord to your planner + '
+                'shopping list.'
+              : 'Added ${result.plan.days.length} $dayWord of meals to '
+                'your planner.',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
+
+  /// Writes a new ShoppingList into the same shared_preferences store
+  /// the Shopping tab reads. Each meal title becomes one item. Returns
+  /// true on success, false on any persistence failure.
+  Future<bool> _appendDietPlanShoppingList(DietMealPlanResult plan) async {
+    try {
+      final titles = <String>{};
+      for (final day in plan.days) {
+        for (final slot in MealSlot.values) {
+          final t = day.forSlot(slot)?.trim();
+          if (t != null && t.isNotEmpty) titles.add(t);
+        }
+      }
+      if (titles.isEmpty) return false;
+
+      final items = titles
+          .map((t) => ShoppingItem(
+                id:   'dietplan_${t.hashCode}_${DateTime.now().microsecondsSinceEpoch}',
+                name: t,
+              ))
+          .toList();
+
+      final now    = DateTime.now();
+      const months = ['Jan','Feb','Mar','Apr','May','Jun',
+                       'Jul','Aug','Sep','Oct','Nov','Dec'];
+      final listName =
+          'AI Meal Plan · ${now.day} ${months[now.month - 1]}';
+
+      final newList = ShoppingList(
+        id:    'dietplan_${now.millisecondsSinceEpoch}',
+        name:  listName,
+        items: items,
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      final raw   = prefs.getString('shopping_lists_v1');
+      final existing = <ShoppingList>[];
+      if (raw != null) {
+        try {
+          final decoded = jsonDecode(raw) as List<dynamic>;
+          for (final e in decoded) {
+            existing.add(ShoppingList.fromJson(e as Map<String, dynamic>));
+          }
+        } catch (_) {/* keep existing empty */}
+      }
+      final updated = [newList, ...existing];
+      await prefs.setString(
+        'shopping_lists_v1',
+        jsonEncode(updated.map((l) => l.toJson()).toList()),
+      );
+      // Wake the Shopping tab so it reloads from prefs on next paint.
+      shoppingListsUpdateNotifier.value++;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _addToSlotByDate(String iso, MealSlot slot) async {
     final plan = _planFor(iso);
     final picked = await showModalBottomSheet<Recipe>(
@@ -542,11 +672,22 @@ class _MealPlannerScreenState extends State<MealPlannerScreen> {
       ),
     ).then((ok) {
       if (ok == true && mounted) {
+        // When the user is on the calendar view, _visibleWeekStart only
+        // updates from list-view prev/next arrows, so tapping a date in
+        // the calendar then "Clear week" used a stale anchor and wiped
+        // the wrong week. Always clear the week containing whichever
+        // anchor is more recently meaningful: the selected calendar day
+        // when on the calendar tab, otherwise the visible list week.
+        final anchor = _showCalendar ? _selectedDay : _visibleWeekStart;
+        final weekStart = _startOfWeek(anchor);
         setState(() {
           for (var i = 0; i < 7; i++) {
             _plansByDate.remove(
-                _isoDate(_visibleWeekStart.add(Duration(days: i))));
+                _isoDate(weekStart.add(Duration(days: i))));
           }
+          // Re-anchor the list view too so when the user toggles back
+          // to it they don't see a different week than they just cleared.
+          _visibleWeekStart = weekStart;
         });
         _savePlan();
       }
@@ -1388,6 +1529,85 @@ class _MealPlannerScreenState extends State<MealPlannerScreen> {
         'Spoon morogo over a mound of mash.',
       ],
     ),
+    // ── Vegan rotation entries ────────────────────────────────────────
+    _InspoSeed(
+      title: 'Vegan Lentil Bobotie',
+      subtitle: 'Plant-based bake · turmeric custard',
+      icon: '🌱', accent: Color(0xFF2E7D32),
+      ingredients: [
+        '2 cups cooked brown lentils',
+        '1 onion, 2 garlic cloves',
+        '1 tbsp Cape Malay curry powder',
+        '2 slices bread soaked in ½ cup oat milk',
+        '2 tbsp chutney, 2 tbsp raisins',
+        '½ cup oat milk + 2 tbsp chickpea flour (custard)',
+        '2 bay leaves, 1 tbsp turmeric',
+      ],
+      instructions: [
+        'Soften onion + garlic in oil; toast curry powder 30 sec.',
+        'Mash in soaked bread, lentils, chutney, raisins; season.',
+        'Spoon into a dish; top with bay leaves.',
+        'Whisk oat milk + chickpea flour + turmeric; pour over the lentils.',
+        'Bake at 180 °C for 30 min until the custard sets golden.',
+      ],
+    ),
+    _InspoSeed(
+      title: 'Chickpea Cape Curry',
+      subtitle: 'Vegan · 30 min · oat-milk finish',
+      icon: '🍛', accent: Color(0xFFE65100),
+      ingredients: [
+        '2 tins chickpeas, drained',
+        '1 onion, 3 garlic cloves, 1 thumb ginger',
+        '2 tbsp Robertsons mild curry powder',
+        '1 tin chopped tomatoes',
+        '1 cup oat milk',
+        '1 tsp ground cumin, fresh coriander to finish',
+      ],
+      instructions: [
+        'Sauté onion, garlic and ginger until fragrant.',
+        'Toast curry powder and cumin 30 sec.',
+        'Add tomatoes, simmer 5 min, then chickpeas.',
+        'Stir in oat milk; simmer 15 min until silky.',
+        'Top with fresh coriander; serve with rice or roti.',
+      ],
+    ),
+    _InspoSeed(
+      title: 'Soy Mince Cottage Pie',
+      subtitle: 'Vegan · weeknight · 35 min',
+      icon: '🥔', accent: Color(0xFF5D4037),
+      ingredients: [
+        '500 g Fry\'s Soy Mince',
+        '1 onion, 2 carrots, 2 garlic cloves',
+        '1 cup veg stock, 2 tbsp tomato paste',
+        '1 tsp Worcestershire (vegan), 1 tsp Marmite',
+        '5 potatoes mashed with oat milk + Flora Plant',
+      ],
+      instructions: [
+        'Soften onion, carrots, garlic; add soy mince to brown.',
+        'Stir in tomato paste, stock, Worcestershire and Marmite.',
+        'Simmer 10 min; pour into a baking dish.',
+        'Top with mash, fork-roughed; bake 180 °C for 20 min.',
+      ],
+    ),
+    _InspoSeed(
+      title: 'Butternut & Bean Potjie',
+      subtitle: 'Vegan · over coals · slow',
+      icon: '🍲', accent: Color(0xFFBF360C),
+      ingredients: [
+        '500 g butternut, cubed',
+        '1 tin red kidney beans, drained',
+        '1 cup lentils, soaked',
+        '1 onion, 3 garlic cloves',
+        '2 cups veg stock, 1 tbsp smoked paprika',
+        '1 cup mealie kernels, 2 bay leaves',
+      ],
+      instructions: [
+        'Sweat onion + garlic in the potjie over coals.',
+        'Layer butternut, beans, lentils, mealie — do NOT stir.',
+        'Pour over stock + smoked paprika; tuck in bay leaves.',
+        'Cover and slow-cook over low coals for 1.5–2 hrs.',
+      ],
+    ),
   ];
 
   /// 3-hour-rotated subset of 4 cards. Seed = (epoch ÷ 3 hours) so the
@@ -1695,9 +1915,21 @@ class _MealPlannerScreenState extends State<MealPlannerScreen> {
                   return ListView.builder(
                     controller: _listCtrl,
                     padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
-                    itemCount: week.length + 1,
+                    itemCount: week.length + 2,
                     itemBuilder: (_, idx) {
                       if (idx == 0) {
+                        // ── Diet meal-plan generator hero ───────────────
+                        // One green card at the top of the planner that
+                        // takes budget + days + diet + slots and writes
+                        // the resulting grid back into _plansByDate.
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: _GenerateMealPlanHero(
+                            onPressed: () => _openDietPlanSheet(),
+                          ),
+                        );
+                      }
+                      if (idx == 1) {
                         // Week header with prev/next nav.
                         final endOfWeek =
                             _visibleWeekStart.add(const Duration(days: 6));
@@ -1736,7 +1968,7 @@ class _MealPlannerScreenState extends State<MealPlannerScreen> {
                           ),
                         );
                       }
-                      final i    = idx - 1;
+                      final i    = idx - 2;
                       final plan = week[i];
                       final iso  = plan.date;
                       return Padding(
@@ -2278,17 +2510,7 @@ class _CompactRecipeTile extends StatelessWidget {
                       ],
                     ],
                   ),
-                  if (recipe.isBraaiReady) ...[
-                    const SizedBox(height: 3),
-                    Text(
-                      '🔥 Braai Ready',
-                      style: TextStyle(
-                        fontSize:   9,
-                        fontWeight: FontWeight.w700,
-                        color:      const Color(0xFFBF360C),
-                      ),
-                    ),
-                  ],
+                  // Braai Ready chip hidden per user request.
                 ],
               ),
             ),
@@ -3348,6 +3570,776 @@ class _CalendarCell extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// _GenerateMealPlanHero — green CTA at the top of the planner (#5)
+// =============================================================================
+
+class _GenerateMealPlanHero extends StatelessWidget {
+  const _GenerateMealPlanHero({required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: onPressed,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 16, 16, 16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end:   Alignment.bottomRight,
+            colors: [Color(0xFF0C351E), Color(0xFF205B4A)],
+          ),
+          boxShadow: const [
+            BoxShadow(
+                color: Color(0x33000000),
+                blurRadius: 14,
+                offset: Offset(0, 6)),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 48, height: 48,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color:        const Color(0xFFE59B27),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Icon(Icons.auto_awesome_rounded,
+                  color: Colors.white, size: 24),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'GENERATE MEAL PLAN',
+                    style: tt.labelSmall?.copyWith(
+                      color:         const Color(0xFFFFD7A8),
+                      letterSpacing: 1.4,
+                      fontWeight:    FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Budget · days · diet',
+                    style: tt.headlineSmall?.copyWith(
+                      color:      Colors.white,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Set a budget + diet · AI plans your week.',
+                    style: tt.bodySmall?.copyWith(
+                      color: const Color(0xFFA8D2BB),
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded,
+                color: Colors.white70, size: 24),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// _DietPlanSheet — collects budget/days/diet/slots, calls Gemini, previews
+// =============================================================================
+
+class _DietPlanCommit {
+  const _DietPlanCommit(this.plan, {this.addToShoppingList = false});
+  final DietMealPlanResult plan;
+  /// When true the parent state also writes a new ShoppingList
+  /// containing every generated meal title so the user has a one-tap
+  /// "what to cook this week" list ready in the Shopping tab.
+  final bool addToShoppingList;
+}
+
+class _DietPlanSheet extends StatefulWidget {
+  const _DietPlanSheet();
+
+  @override
+  State<_DietPlanSheet> createState() => _DietPlanSheetState();
+}
+
+class _DietPlanSheetState extends State<_DietPlanSheet> {
+  final _budgetCtrl = TextEditingController();
+  final _customCtrl = TextEditingController();
+  int  _days  = 7;
+  String _diet = 'Standard';
+  final Set<MealSlot> _slots = {
+    MealSlot.breakfast, MealSlot.lunch, MealSlot.dinner,
+  };
+  bool _running = false;
+  DietMealPlanResult? _result;
+  String? _error;
+  /// True when [_error] came from an upstream "AI is overloaded / 503"
+  /// signal. Drives the friendly "AI chef is swamped" card instead of
+  /// the raw JSON dump.
+  bool _errorIsOverloaded = false;
+
+  static bool _looksOverloaded(String msg) {
+    final s = msg.toLowerCase();
+    return s.contains('503')
+        || s.contains('unavailable')
+        || s.contains('overloaded')
+        || s.contains('high demand')
+        || s.contains('try again later');
+  }
+
+  static const _diets = [
+    'Standard', 'Vegan', 'Vegetarian', 'Anti-inflammatory',
+    'Diabetic-friendly', 'Carnivore', 'Keto', 'Mediterranean',
+    'Gluten-free', 'Halaal', 'Kosher', 'Custom…',
+  ];
+
+  @override
+  void dispose() {
+    _budgetCtrl.dispose();
+    _customCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run() async {
+    if (_running) return;
+    setState(() {
+      _running = true;
+      _error   = null;
+    });
+    final budget = double.tryParse(
+        _budgetCtrl.text.replaceAll('R', '').replaceAll(',', '.').trim());
+    final dietLabel = _diet == 'Custom…'
+        ? 'Custom: ${_customCtrl.text.trim()}'
+        : _diet;
+    try {
+      final result = await DietMealPlanService.instance.generate(
+        days:      _days,
+        budgetZar: budget,
+        diet:      dietLabel,
+        slots:     _slots,
+      );
+      if (!mounted) return;
+      setState(() {
+        _running = false;
+        _result  = result;
+      });
+    } on DietMealPlanException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _running = false;
+        _error   = e.message;
+        _errorIsOverloaded = _looksOverloaded(e.message);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _running = false;
+        final raw = e.toString();
+        _errorIsOverloaded = _looksOverloaded(raw);
+        _error   = _errorIsOverloaded
+            ? raw
+            : 'Could not generate a plan — try again.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    return DraggableScrollableSheet(
+      initialChildSize: 0.92,
+      minChildSize:     0.5,
+      maxChildSize:     0.95,
+      expand:           false,
+      builder: (_, scrollCtrl) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFFF8F6F1),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+        ),
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color:        const Color(0xFFD8D3C8),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: ListView(
+                controller: scrollCtrl,
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 20),
+                children: [
+                  Text(
+                    _result == null
+                        ? 'Generate a meal plan'
+                        : 'Preview your plan',
+                    style: tt.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      color:      const Color(0xFF0C351E),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _result == null
+                        ? 'Set a budget, pick a diet, pick the slots — '
+                          'AI builds the rest.'
+                        : 'Adds to your planner starting today. '
+                          'Tap any meal later to expand into a full recipe.',
+                    style: tt.bodySmall?.copyWith(
+                      color: const Color(0xFF55534E),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  if (_result == null) ..._buildForm(tt),
+                  if (_result != null) ..._buildPreview(tt),
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    _errorIsOverloaded
+                        ? _AiSwampedCard(onRetry: _run)
+                        : Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFE5E0),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              _error!,
+                              style: const TextStyle(
+                                color:      Color(0xFFB14A2A),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                  ],
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+            // ── Sticky footer ─────────────────────────────────────────
+            // Pulled out of the scroll AND wrapped in SafeArea(bottom)
+            // so the buttons clear the Android system-gesture zone (3-
+            // button nav / pill) instead of bleeding into it.
+            SafeArea(
+              top:    false,
+              bottom: true,
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Color(0xFFF8F6F1),
+                  border: Border(
+                    top: BorderSide(color: Color(0xFFE6E2D8), width: 1),
+                  ),
+                ),
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
+                child: _result == null
+                    ? FilledButton.icon(
+                        onPressed: _running ? null : _run,
+                        icon: _running
+                            ? const SizedBox(
+                                width: 18, height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.4, color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.bolt_rounded,
+                                color: Colors.white),
+                        label: Text(
+                          _running ? 'Generating…' : 'Generate meals',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF0C351E),
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size.fromHeight(52),
+                          textStyle: const TextStyle(
+                            fontWeight: FontWeight.w900, fontSize: 15,
+                            color: Colors.white,
+                          ),
+                        ),
+                      )
+                    : Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: () => Navigator.of(context).pop(
+                                    _DietPlanCommit(
+                                      _result!,
+                                      addToShoppingList: false,
+                                    ),
+                                  ),
+                                  icon: const Icon(
+                                      Icons.calendar_month_rounded,
+                                      color: Colors.white),
+                                  label: const Text(
+                                    'Planner',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor:
+                                        const Color(0xFFE59B27),
+                                    foregroundColor: Colors.white,
+                                    minimumSize: const Size.fromHeight(48),
+                                    textStyle: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: () => Navigator.of(context).pop(
+                                    _DietPlanCommit(
+                                      _result!,
+                                      addToShoppingList: true,
+                                    ),
+                                  ),
+                                  icon: const Icon(
+                                      Icons.shopping_cart_rounded,
+                                      color: Colors.white),
+                                  label: const Text(
+                                    '+ Shopping',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor:
+                                        const Color(0xFF0C351E),
+                                    foregroundColor: Colors.white,
+                                    minimumSize: const Size.fromHeight(48),
+                                    textStyle: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: () =>
+                                setState(() => _result = null),
+                            icon: const Icon(Icons.refresh_rounded,
+                                size: 18),
+                            label: const Text('Regenerate'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor:
+                                  const Color(0xFF0C351E),
+                              minimumSize: const Size.fromHeight(40),
+                              side: const BorderSide(
+                                color: Color(0xFF0C351E),
+                                width: 1.0,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildForm(TextTheme tt) {
+    return [
+      _sectionLabel('Budget (optional)'),
+      const SizedBox(height: 6),
+      TextField(
+        controller: _budgetCtrl,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: const InputDecoration(
+          prefixText: 'R ',
+          hintText:   'e.g. 800',
+          filled:     true,
+          fillColor:  Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(12)),
+            borderSide:   BorderSide.none,
+          ),
+        ),
+      ),
+      const SizedBox(height: 18),
+      _sectionLabel('Days'),
+      Slider(
+        min: 1, max: 14,
+        value: _days.toDouble(),
+        divisions: 13,
+        label: '$_days',
+        activeColor: const Color(0xFFE59B27),
+        onChanged: (v) => setState(() => _days = v.round()),
+      ),
+      Center(
+        child: Text(
+          '$_days ${_days == 1 ? "day" : "days"}',
+          style: tt.titleMedium?.copyWith(
+            fontWeight: FontWeight.w900,
+            color:      const Color(0xFF0C351E),
+          ),
+        ),
+      ),
+      const SizedBox(height: 18),
+      _sectionLabel('Diet'),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8, runSpacing: 8,
+        children: _diets.map((d) {
+          final on = _diet == d;
+          return GestureDetector(
+            onTap: () => setState(() => _diet = d),
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: on
+                    ? const Color(0xFF0C351E)
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: on
+                      ? const Color(0xFF0C351E)
+                      : const Color(0xFFD8D3C8),
+                ),
+              ),
+              child: Text(
+                d,
+                style: TextStyle(
+                  color:      on ? Colors.white : const Color(0xFF0C351E),
+                  fontWeight: FontWeight.w800,
+                  fontSize:   13,
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+      if (_diet == 'Custom…') ...[
+        const SizedBox(height: 12),
+        TextField(
+          controller: _customCtrl,
+          decoration: const InputDecoration(
+            hintText:  'e.g. "low-FODMAP, no dairy"',
+            filled:    true,
+            fillColor: Colors.white,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.all(Radius.circular(12)),
+              borderSide:   BorderSide.none,
+            ),
+          ),
+        ),
+      ],
+      const SizedBox(height: 18),
+      _sectionLabel('Meal slots'),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8, runSpacing: 8,
+        children: MealSlot.values.map((s) {
+          final on = _slots.contains(s);
+          return GestureDetector(
+            onTap: () => setState(() {
+              if (on) _slots.remove(s); else _slots.add(s);
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: on
+                    ? const Color(0xFFE59B27)
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: on
+                      ? const Color(0xFFE59B27)
+                      : const Color(0xFFD8D3C8),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(s.emoji,
+                      style: const TextStyle(fontSize: 14)),
+                  const SizedBox(width: 6),
+                  Text(
+                    s.label,
+                    style: TextStyle(
+                      color: on ? Colors.white : const Color(0xFF0C351E),
+                      fontWeight: FontWeight.w800,
+                      fontSize:   13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    ];
+  }
+
+  List<Widget> _buildPreview(TextTheme tt) {
+    final r = _result!;
+    final budget = double.tryParse(
+        _budgetCtrl.text.replaceAll('R', '').replaceAll(',', '.').trim());
+    return [
+      if (r.estimatedTotalZar != null)
+        Builder(builder: (_) {
+          final total      = r.estimatedTotalZar!;
+          final hasBudget  = budget != null && budget > 0;
+          final overBudget = hasBudget && total > budget;
+          final delta      = hasBudget ? (total - budget) : 0.0;
+          final bg = !hasBudget
+              ? const Color(0xFFE5F3EA)
+              : overBudget
+                  ? const Color(0xFFFFE5E0)
+                  : const Color(0xFFE5F3EA);
+          final fg = overBudget
+              ? const Color(0xFFB14A2A)
+              : const Color(0xFF0C351E);
+          final summary = !hasBudget
+              ? 'Estimated total: R${total.toStringAsFixed(2)}'
+              : overBudget
+                  ? 'Estimated R${total.toStringAsFixed(2)} · '
+                    'R${delta.toStringAsFixed(2)} over budget'
+                  : 'Estimated R${total.toStringAsFixed(2)} · '
+                    'R${(-delta).toStringAsFixed(2)} under budget';
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color:        bg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: fg.withAlpha(60)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        overBudget
+                            ? Icons.error_outline_rounded
+                            : Icons.savings_rounded,
+                        color: fg, size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          summary,
+                          style: TextStyle(
+                            color:      fg,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (overBudget) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Cheaper realistic plans for this diet weren\'t '
+                      'enough — tap Regenerate to try again, or accept '
+                      'the gap and add to your planner.',
+                      style: TextStyle(
+                        color:    fg.withAlpha(220),
+                        fontSize: 11.5,
+                        height:   1.35,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        }),
+      for (final day in r.days) ...[
+        Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          margin:  const EdgeInsets.only(bottom: 10),
+          decoration: BoxDecoration(
+            color:        Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFE6E2D8)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                day.label,
+                style: tt.titleSmall?.copyWith(
+                  color:      const Color(0xFF0C351E),
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 6),
+              if (day.breakfast != null)
+                _previewSlotLine('🌅', 'Breakfast', day.breakfast!),
+              if (day.lunch != null)
+                _previewSlotLine('☀️', 'Lunch', day.lunch!),
+              if (day.dinner != null)
+                _previewSlotLine('🌙', 'Dinner', day.dinner!),
+            ],
+          ),
+        ),
+      ],
+    ];
+  }
+
+  Widget _previewSlotLine(String emoji, String label, String title) =>
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Row(
+          children: [
+            Text(emoji, style: const TextStyle(fontSize: 13)),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 76,
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color:      Color(0xFF55534E),
+                  fontWeight: FontWeight.w700,
+                  fontSize:   12,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  color:      Color(0xFF0C351E),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _sectionLabel(String s) => Text(
+        s.toUpperCase(),
+        style: const TextStyle(
+          color:         Color(0xFF0C351E),
+          fontWeight:    FontWeight.w900,
+          fontSize:      11,
+          letterSpacing: 1.2,
+        ),
+      );
+}
+
+// =============================================================================
+// _AiSwampedCard — friendly 503/UNAVAILABLE replacement for the raw JSON box
+// =============================================================================
+//
+// Replaces the dumped "Server Error [503] {...}" red panel with a
+// lighthearted card so users see a story instead of a stack trace.
+
+class _AiSwampedCard extends StatelessWidget {
+  const _AiSwampedCard({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color:        const Color(0xFFFFF1D6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: const Color(0xFFE59B27).withAlpha(120),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 38, height: 38,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color:        const Color(0xFFE59B27),
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: const Text('🧑‍🍳',
+                    style: TextStyle(fontSize: 18)),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'The AI chef is a bit swamped! 🔥',
+                  style: TextStyle(
+                    color:      Color(0xFF6B3A07),
+                    fontWeight: FontWeight.w900,
+                    fontSize:   14.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            "Too many people are cooking up a storm right now and our "
+            "servers are working overtime. Give it a minute or two, "
+            "tap 'Generate meals' again, and we'll get your plan sorted!",
+            style: TextStyle(
+              color:    Color(0xFFB14A2A),
+              fontSize: 12.5,
+              height:   1.4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded, color: Colors.white),
+              label: const Text(
+                'Try again',
+                style: TextStyle(color: Colors.white),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFE59B27),
+                foregroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(42),
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.w900,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -4,9 +4,8 @@
 // via SendGrid. Migrated from Resend on 2026-06-19 — see the long
 // docstring at the top of send-report-email/index.ts for the why.
 //
-// SECURITY NOTE: SendGrid API key inlined into the deployed function
-// for now. Move to a SUPABASE secret named SENDGRID_API_KEY when
-// convenient, then read it via Deno.env.get('SENDGRID_API_KEY').
+// SendGrid API key is loaded from the SUPABASE secret SENDGRID_API_KEY.
+// Set it via `supabase secrets set SENDGRID_API_KEY=…` before deploying.
 
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 

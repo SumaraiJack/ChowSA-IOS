@@ -87,7 +87,13 @@ class LocalHubService {
   /// the last value from [currentHub] (which may already be the cached hub
   /// from [bootstrap]), so the UI is never left hanging forever.
   Future<HubModel?> refreshFromGps({
-    double maxDistanceMeters = 25000,
+    // Widened from 25 km (which trapped travelling users on the cached
+    // "Table View" hub forever — anywhere outside Cape Town's metro
+    // returned zero matches and the old value stuck). 250 km picks the
+    // sensible nearest seeded hub anywhere in SA; if the user is even
+    // further out we fall back to a coarse country-wide nearest match
+    // inside _doRefresh.
+    double maxDistanceMeters = 250000,
     int    limit             = 3,
   }) async {
     isLoading.value = true;
@@ -126,14 +132,31 @@ class LocalHubService {
     final pos = await _getPosition();
     if (pos == null) return currentHub.value; // permission denied / no fix
 
-    final hubs = await fetchLocalHubs(
+    var hubs = await fetchLocalHubs(
       pos.latitude,
       pos.longitude,
       maxDistanceMeters: maxDistanceMeters,
       limit:             limit,
     );
+    // Country-wide fallback: if the user roams beyond the requested
+    // radius the original logic kept whatever was cached (so Table View
+    // hung around even when the user was hundreds of km away). Re-ask
+    // with an effectively unbounded radius so we always pick the
+    // closest seeded hub anywhere in SA.
+    if (hubs.isEmpty) {
+      hubs = await fetchLocalHubs(
+        pos.latitude,
+        pos.longitude,
+        maxDistanceMeters: 5000000, // ~5000 km, larger than SA's diameter
+        limit:             limit,
+      );
+    }
     final primary = hubs.isEmpty ? null : hubs.first;
     if (primary != null) {
+      // Always publish the freshest GPS-resolved hub even if it matches
+      // the cached one — ValueNotifier dedupes equal values, so this is
+      // free, and it ensures stale caches get overwritten the moment we
+      // resolve a new closest hub.
       currentHub.value = primary;
       unawaited(_persist(primary));
     }

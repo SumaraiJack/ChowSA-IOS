@@ -49,6 +49,21 @@ String _extFromFilename(String filename, {String fallback = 'jpg'}) {
 }
 
 // =============================================================================
+//   COLD-START SAFEGUARD — community unlock threshold (WS4)
+// =============================================================================
+//
+// A locality's channel set stays in a friendly "coming to your area" state
+// until [kCommunityUnlockThreshold] distinct users have posted in any of
+// its channels. Five empty channels per suburb look dead to a brand-new
+// user; this gate protects the first impression without throttling the
+// vision (see PLAN.md §WS4).
+//
+// Threshold is intentionally a single named constant so it can be tuned
+// later without hunting through call sites. Active count comes from
+// `public.get_locality_active_count(p_suburb)` (SECURITY DEFINER RPC).
+const int kCommunityUnlockThreshold = 10;
+
+// =============================================================================
 //   ENUMS + MODELS
 // =============================================================================
 
@@ -321,6 +336,31 @@ class CommunityHubService {
       return 'Table View';
     } catch (_) {
       return 'Table View';
+    }
+  }
+
+  // ── Locality active count (WS4 cold-start gate) ─────────────────────────
+  //
+  // Distinct authors who have posted in any channel of the given suburb.
+  // Backed by the SECURITY DEFINER RPC `get_locality_active_count` so the
+  // count is honest even when the caller can't read the underlying rows
+  // (e.g. a viewer in a different suburb). Falls back to 0 on failure so
+  // the gate fails closed (UI keeps the friendly "coming soon" state
+  // rather than opening on a flaky network).
+  Future<int> getLocalityActiveCount(String suburb) async {
+    final clean = suburb.trim();
+    if (clean.isEmpty) return 0;
+    try {
+      final res = await _sb.rpc(
+        'get_locality_active_count',
+        params: {'p_suburb': clean},
+      );
+      if (res is int)    return res;
+      if (res is num)    return res.toInt();
+      if (res is String) return int.tryParse(res) ?? 0;
+      return 0;
+    } catch (_) {
+      return 0;
     }
   }
 

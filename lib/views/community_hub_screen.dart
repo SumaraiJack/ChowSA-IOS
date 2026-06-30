@@ -19,6 +19,7 @@ import '../state/community_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/motion.dart';
 import '../widgets/animated_emoji.dart';
+import '../widgets/loadshedding_signature_card.dart';
 import 'channel_chat_screen.dart';
 import 'local_braai_hub_view.dart';
 
@@ -32,6 +33,11 @@ class CommunityHubScreen extends StatefulWidget {
 class _CommunityHubScreenState extends State<CommunityHubScreen> {
   String? _suburb;
   bool    _isAdmin = false;
+  // WS4 cold-start gate: distinct authors in this suburb's channels.
+  // Null = not yet resolved (don't lock or unlock prematurely); int = the
+  // last known count. Compared against [kCommunityUnlockThreshold] in
+  // build() to decide whether channels render or the placeholder shows.
+  int?    _localityActiveCount;
 
   // Per-category unread badges + the per-suburb channels stream now live
   // on CommunityController. This widget just ValueListenableBuilder's
@@ -95,6 +101,20 @@ class _CommunityHubScreenState extends State<CommunityHubScreen> {
     // the channel_messages realtime channel and the per-category unread
     // refresh cycle for the whole app.
     unawaited(CommunityController.instance.refreshSuburb());
+
+    // WS4: resolve the locality active count off the critical path. The
+    // UI keeps painting with `_localityActiveCount == null` (treated as
+    // "unknown — show channels") until this returns; on success it may
+    // flip to the friendly "coming to your area" placeholder.
+    unawaited(_refreshLocalityCount());
+  }
+
+  Future<void> _refreshLocalityCount() async {
+    final suburb = _suburb;
+    if (suburb == null) return;
+    final n = await CommunityHubService.instance.getLocalityActiveCount(suburb);
+    if (!mounted) return;
+    setState(() => _localityActiveCount = n);
   }
 
   @override
@@ -198,6 +218,10 @@ class _CommunityHubScreenState extends State<CommunityHubScreen> {
   Widget _buildScaffold(BuildContext scaffoldCtx, String suburb, HubModel? gpsHub) {
     final cs = Theme.of(scaffoldCtx).colorScheme;
     final tt = Theme.of(scaffoldCtx).textTheme;
+    // WS4 cold-start gate. Null count → treat as unlocked (don't punish
+    // first paint with a placeholder while the RPC is in flight).
+    final count    = _localityActiveCount;
+    final unlocked = count == null || count >= kCommunityUnlockThreshold;
 
     return Scaffold(
       backgroundColor: cs.surface,
@@ -222,12 +246,35 @@ class _CommunityHubScreenState extends State<CommunityHubScreen> {
                   ),
                 ),
 
+                // ── Loadshedding signature card (WS5 relocation) ──────
+                // Moved here from the home spine so the home stops being a
+                // "open it, check the grid, leave" surface. All service
+                // wiring + state branches + badges intact — only the
+                // mounting screen changed. Stays visible regardless of
+                // the WS4 cold-start threshold: loadshedding status is
+                // useful to the user *immediately*, it doesn't depend on
+                // local channel activity.
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                    // Compact: just the POWER pill + area pill so the
+                    // Community screen leads with channels, not the
+                    // grid. The "Fire Up the Grid" headline + Browse
+                    // Braai Recipes button were dropped per user
+                    // direction — Braai still lives in its own tile
+                    // below.
+                    child: const LoadsheddingSignatureCard(compact: true),
+                  ),
+                ),
+
                 // ── Section title ──────────────────────────────────────
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(20, 22, 20, 10),
                     child: Text(
-                      'Live in your area',
+                      unlocked
+                          ? 'Live in your area'
+                          : 'Coming to your area',
                       style: tt.titleMedium?.copyWith(
                         fontWeight: FontWeight.w800,
                         color:      cs.onSurface,
@@ -235,6 +282,26 @@ class _CommunityHubScreenState extends State<CommunityHubScreen> {
                     ),
                   ),
                 ),
+
+                // ── Cold-start placeholder (WS4) ───────────────────────
+                // Five empty channels per suburb look dead to a brand-new
+                // user. Below kCommunityUnlockThreshold distinct authors
+                // in the locality we render a single friendly card in
+                // place of the channel list. The channel data, RLS, and
+                // realtime stream all stay live — only the UI surface is
+                // gated, so the moment the threshold flips the existing
+                // cards reappear with no migration to run.
+                if (!unlocked)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                      child: _ComingToYourAreaCard(
+                        suburb:      suburb,
+                        activeCount: count,
+                        threshold:   kCommunityUnlockThreshold,
+                      ),
+                    ),
+                  ),
 
                 // ── Four status row cards ──────────────────────────────
                 // onTap is ALWAYS non-null so the GestureDetector inside
@@ -244,7 +311,7 @@ class _CommunityHubScreenState extends State<CommunityHubScreen> {
                 // This also means cards remain tappable while the stream
                 // is still loading (snap.data == null) or when the GPS
                 // suburb isn't in the seeded pilot set yet.
-                SliverList.separated(
+                if (unlocked) SliverList.separated(
                   // Braai is rendered as its own dedicated tile below, so
                   // keep it out of the four canonical category cards even
                   // though the enum now includes it.
@@ -283,11 +350,12 @@ class _CommunityHubScreenState extends State<CommunityHubScreen> {
                 ),
 
                 // ── Braai Recipes tile (appended to the list) ──────────
-                // Sits below the four canonical channel cards. Routes to
-                // the dedicated LocalBraaiHubView, NOT the My Recipes
-                // screen — same destination as the home loadshedding
-                // card's "Browse Braai Recipes" CTA.
-                SliverToBoxAdapter(
+                // Sits below the four canonical channel cards. Gated by
+                // the WS4 cold-start threshold — when channels are
+                // hidden behind the "coming to your area" card, Braai
+                // hides too so the screen reads as one coherent
+                // coming-soon state instead of a single dangling tile.
+                if (unlocked) SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
                     child: _BraaiRecipesTile(
@@ -745,6 +813,100 @@ class _BraaiRecipesTile extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+//   _ComingToYourAreaCard — WS4 cold-start placeholder for sub-threshold areas
+// =============================================================================
+//
+// Replaces the four channel cards when fewer than [kCommunityUnlockThreshold]
+// distinct users have posted in the locality's channels. The brand voice
+// stays warm and Mzansi-flavoured — we are NOT delivering a grey "feature
+// disabled" message. Channels, RLS, and the realtime stream all stay live;
+// only the UI is gated for first-impression protection (see PLAN.md §WS4).
+
+class _ComingToYourAreaCard extends StatelessWidget {
+  const _ComingToYourAreaCard({
+    required this.suburb,
+    required this.activeCount,
+    required this.threshold,
+  });
+
+  final String suburb;
+  final int    activeCount;
+  final int    threshold;
+
+  @override
+  Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    final cs = Theme.of(context).colorScheme;
+    final remaining = (threshold - activeCount).clamp(1, threshold);
+    final progress  = (activeCount / threshold).clamp(0.0, 1.0);
+
+    return Container(
+      decoration: BoxDecoration(
+        color:        AppTheme.kAlabaster,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.6)),
+      ),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const AnimatedEmoji(
+                emoji: '🌱',
+                anim:  EmojiAnim.bounce,
+                size:  32,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Channels are warming up in $suburb',
+                  style: tt.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color:      cs.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "We're keeping Spotted, Gatherings, Pantry, What's Cooking "
+            "and Braai Recipes tucked away until a few more locals are "
+            "around — so when you open them, there's something to read. "
+            "$remaining more neighbour${remaining == 1 ? '' : 's'} "
+            "until they go live.",
+            style: tt.bodyMedium?.copyWith(
+              color:  AppTheme.kEarthGrey,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 14),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value:           progress,
+              minHeight:       6,
+              backgroundColor: cs.outlineVariant.withValues(alpha: 0.4),
+              color:           const Color(0xFFE59B27),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '$activeCount of $threshold locals',
+            style: tt.labelSmall?.copyWith(
+              color:      AppTheme.kEarthGrey,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.4,
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -1,3 +1,5 @@
+import '../utils/measurement_format.dart';
+
 class Ingredient {
   final double? quantity;
   final String? unit;
@@ -28,10 +30,12 @@ class Ingredient {
         localizedName: json['localizedName'] as String?,
       );
 
+  /// Single source of truth for "qty unit name" rendering across the
+  /// app. Delegates to [formatIngredientLine] so imperial units (cups,
+  /// tsp, tbsp) are auto-converted to SA metric (g / ml) and quantities
+  /// are snapped to clean kitchen numbers. Every call site that used
+  /// `.toString()` for ingredients now picks up the conversion
+  /// automatically.
   @override
-  String toString() {
-    final qty = quantity != null ? '${quantity!.toStringAsFixed(quantity! % 1 == 0 ? 0 : 1)} ' : '';
-    final u = unit != null ? '$unit ' : '';
-    return '$qty$u$displayName';
-  }
+  String toString() => formatIngredientLine(this);
 }

@@ -6,6 +6,7 @@ import '../models/recipe.dart';
 import '../models/ingredient.dart';
 import '../config/env.config.dart';
 import '../config/servings_pref.dart';
+import '../state/vegan_mode.dart';
 import 'recipe_tag_validator.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -122,9 +123,13 @@ class PantryService {
         if (exclusionBlock.isNotEmpty) exclusionBlock,
         servingsBlock,
         ingredientBlock,
+        if (VeganMode.promptDirective.isNotEmpty)
+          VeganMode.promptDirective.trim(),
       ];
       final prompt = blocks.join('\n\n');
       final rawJson = await _callGemini(prompt);
+      // Auto image hydration ripped 2026-06-23 — Wikipedia/Pixabay
+      // matches were unreliable; the pantry cards now use emoji/initials.
       return _parseRecipes(rawJson);
     } catch (_) {
       // On any network / quota / parse failure, return context-aware mock data

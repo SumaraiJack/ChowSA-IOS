@@ -353,6 +353,7 @@ class ShoppingList {
     required this.name,
     List<ShoppingItem>? items,
     DateTime? createdAt,
+    this.budgetZar,
   })  : items     = items ?? [],
         createdAt = createdAt ?? DateTime.now();
 
@@ -360,6 +361,13 @@ class ShoppingList {
   String                   name;
   final List<ShoppingItem> items;
   final DateTime           createdAt;
+
+  /// Optional user-set budget in ZAR for this list. WS2: drives the
+  /// `Basket Rxxx · Rxx left / Rxx over` badge on the list detail view.
+  /// Null = no budget set; the screen falls back to showing the basket
+  /// total only. Persisted alongside the rest of the list in
+  /// shared_preferences (lists themselves aren't cloud-synced yet).
+  double? budgetZar;
 
   int  get totalCount   => items.length;
   int  get checkedCount => items.where((i) => i.checked).length;
@@ -370,6 +378,7 @@ class ShoppingList {
         'name':      name,
         'items':     items.map((i) => i.toJson()).toList(),
         'createdAt': createdAt.toIso8601String(),
+        if (budgetZar != null) 'budgetZar': budgetZar,
       };
 
   factory ShoppingList.fromJson(Map<String, dynamic> j) => ShoppingList(
@@ -379,5 +388,6 @@ class ShoppingList {
             .map((e) => ShoppingItem.fromJson(e as Map<String, dynamic>))
             .toList(),
         createdAt: DateTime.parse(j['createdAt'] as String),
+        budgetZar: (j['budgetZar'] as num?)?.toDouble(),
       );
 }

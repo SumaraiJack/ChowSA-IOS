@@ -9,11 +9,9 @@
 // wasn't possible. SendGrid's Single Sender flow lets us send from a
 // verified Gmail address to any recipient without domain ownership.
 //
-// SECURITY NOTE — the SendGrid API key is currently inlined into the
-// deployed function (visible only inside the Supabase project, not in
-// any public source). Move it to a SUPABASE secret named
-// SENDGRID_API_KEY when you have a moment, then read it via
-// Deno.env.get('SENDGRID_API_KEY').
+// SendGrid API key is loaded from the SUPABASE secret SENDGRID_API_KEY.
+// Set it via `supabase secrets set SENDGRID_API_KEY=…` before deploying
+// — the function will fail to boot if it's missing.
 
 import { serve }       from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';

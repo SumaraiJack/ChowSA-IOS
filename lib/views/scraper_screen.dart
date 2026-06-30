@@ -12,23 +12,18 @@ import '../utils/measurement_format.dart';
 import '../models/shopping_list.dart';
 import '../services/scraper_service.dart';
 import '../services/ad_reward_service.dart';
-import '../services/loadshedding_service.dart';
-import '../services/location_permission_gate.dart';
 import '../services/notification_center.dart';
 import '../services/weather_service.dart';
 import '../services/recipe_repository.dart';
+import '../state/share_intent_inbox.dart';
+import '../state/vegan_mode.dart';
 import '../theme/app_theme.dart';
-import 'package:geolocator/geolocator.dart';
 import 'community_feed_screen.dart';
 import 'recipe_detail_screen.dart';
 import 'meal_planner_screen.dart';
-import 'local_braai_hub_view.dart';
 import 'my_recipes_screen.dart';
 import '../widgets/smart_suggestions_card.dart';
 import 'add_edit_recipe_screen.dart';
-import '../services/world_cup_service.dart';
-import '../widgets/world_cup_ticker.dart';
-import 'soccer_stadium_screen.dart';
 
 // Days used by the meal planner throughout the file.
 const _kDays = [
@@ -79,7 +74,38 @@ class _ScraperScreenState extends State<ScraperScreen> {
   final Map<String, Recipe?> _mealPlan = {for (final d in _kDays) d: null};
 
   @override
+  void initState() {
+    super.initState();
+    // Listen for URLs shared from Instagram / TikTok / YouTube / etc.
+    // via the OS share sheet. When one arrives, drop it into the URL
+    // controller and fire the same _submit() path the paste-and-scan
+    // button uses — no separate UI flow.
+    ShareIntentInbox.instance.pendingSharedUrl
+        .addListener(_handleSharedUrl);
+    // Cold-start case: a URL was already pending when this widget
+    // mounted (app launched via Share). Schedule for next frame so we
+    // don't trigger setState during build.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _handleSharedUrl());
+  }
+
+  void _handleSharedUrl() {
+    if (!mounted) return;
+    final url = ShareIntentInbox.instance.pendingSharedUrl.value;
+    if (url == null || url.isEmpty) return;
+    ShareIntentInbox.instance.consume();
+    setState(() {
+      _isRawMode = false;
+      _urlController.text = url;
+      _urlController.selection = TextSelection.fromPosition(
+          TextPosition(offset: _urlController.text.length));
+    });
+    unawaited(_submit());
+  }
+
+  @override
   void dispose() {
+    ShareIntentInbox.instance.pendingSharedUrl
+        .removeListener(_handleSharedUrl);
     _urlController.dispose();
     _rawTextController.dispose();
     _scrollController.dispose();
@@ -544,7 +570,7 @@ class _ScraperScreenState extends State<ScraperScreen> {
       backgroundColor:    Colors.transparent,
       builder: (_) => _SeasonalDishDetailSheet(
         dish: dish,
-        onSave: () async {
+        onSave: (imageUrl) async {
           // Capture the messenger BEFORE any await so we never reach into a
           // dead `context` after the user switches tabs or pops the sheet
           // mid-save. ScaffoldMessengerState survives the route change.
@@ -573,6 +599,7 @@ class _ScraperScreenState extends State<ScraperScreen> {
             instructions:           List<String>.from(dish.instructions),
             isLoadsheddingFriendly: dish.isLoadsheddingFriendly,
             isBraaiReady:           dish.isBraaiReady,
+            imageUrl:               imageUrl,
           );
           try {
             await RecipeRepository.instance
@@ -631,37 +658,7 @@ class _ScraperScreenState extends State<ScraperScreen> {
                     // Community tab (which was unrelated to the dish tapped).
                     onDishTap: (dish) => _showSeasonalDishSheet(context, dish),
                   ),
-                  const SizedBox(height: 16),
-
-                  // ── World Cup Ticker ──────────────────────────────────
-                  // Mirrors the soccer hub: shows the priority match — a
-                  // LIVE game first (with the WorldCupTicker's pulsing LIVE
-                  // dot + "LIVE {minute}'"), otherwise the next upcoming
-                  // match, otherwise the most recent final. Bafana-preferred
-                  // within each tier, so the gold border + "BAFANA UPCOMING
-                  // 🔥" + "MZANSI HYPE" badge light up when South Africa is on.
-                  ValueListenableBuilder(
-                    valueListenable: WorldCupService.instance.priorityMatch,
-                    builder: (context, match, __) {
-                      if (match == null) return const SizedBox.shrink();
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          WorldCupTicker(
-                            match: match,
-                            onTap: () => Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => const SoccerStadiumScreen(),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                      );
-                    },
-                  ),
-
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 24),
                   // Show the full InputCard in result/error states (not during
                   // idle or loading — idle has its own embedded URL bar and
                   // loading keeps the idle view visible to avoid a blank screen).
@@ -755,7 +752,30 @@ class _ScraperScreenState extends State<ScraperScreen> {
         urlController:   _urlController,
         onPasteUrl:      _pasteUrl,
         onSubmitUrl:     _submit,
+        onGenerateByName: _generateRecipeByName,
       );
+
+  // Called from the home "Generate any recipe" card. Hands the typed
+  // recipe name to ScraperService and pushes the resulting Recipe into
+  // the same review/save flow the URL scraper uses.
+  Future<void> _generateRecipeByName(String name) async {
+    final allowed = await _adService.requestScan(context, ScanKind.recipeScraper);
+    if (!allowed) return;
+    setState(() => _isProcessingLink = true);
+    try {
+      final recipe = await _service.generateRecipeFromName(name);
+      if (!mounted) return;
+      await _openRecipeEditor(recipe);
+    } on ScraperException catch (e) {
+      if (mounted) _showSnack(_friendlyScraperError(e.message));
+    } catch (_) {
+      if (mounted) {
+        _showSnack("Couldn't generate that one — try a different recipe name.");
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessingLink = false);
+    }
+  }
 
   // ── CRASH-SAFE BODY ROUTER ──────────────────────────────────────────────────
   // The home idle view is the DEFAULT for every non-Success state. _Loading and
@@ -983,8 +1003,13 @@ class _HomeHeroCardState extends State<_HomeHeroCard> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // WS3: the hero now leads with the spine — cook +
+                        // budget — instead of a time-of-day greeting. The
+                        // time-of-day copy is demoted to the secondary line
+                        // below alongside weather/season so personality stays
+                        // intact without burying the promise.
                         Text(
-                          season.eyebrow.toUpperCase(),
+                          'PLAN · COOK · BUDGET',
                           style: text.labelSmall?.copyWith(
                             color:         colors.primary,
                             fontWeight:    FontWeight.w800,
@@ -1000,31 +1025,35 @@ class _HomeHeroCardState extends State<_HomeHeroCard> {
                               color:         colors.onSurface,
                               height:        1.05,
                               letterSpacing: -0.8,
-                              fontSize:      30,
+                              fontSize:      28,
                             ),
                             children: [
-                              TextSpan(text: _greetingCopy),
+                              const TextSpan(
+                                text: 'Plan the week. Know the cost '
+                                      'before you shop.',
+                              ),
                               TextSpan(
                                 text:  '  $_greetingEmoji',
-                                style: const TextStyle(fontSize: 26),
+                                style: const TextStyle(fontSize: 24),
                               ),
                             ],
                           ),
                         ),
                         const SizedBox(height: 8),
-                        // Live temperature line — pulls location + temp from
-                        // WeatherService so the user gets a contextual line
-                        // like "Slow-cooked, deeply warming · Cape Town 14°C"
+                        // Secondary line — greeting + weather + seasonal blurb.
+                        // Keeps the Mzansi voice and the live WeatherService
+                        // signal while the headline above carries the spine.
                         StreamBuilder<WeatherReading>(
                           stream:      WeatherService.instance.stream,
                           initialData: WeatherService.instance.latest,
                           builder: (_, snap) {
                             final reading = snap.data;
+                            final tail = reading == null
+                                ? '${season.shortBlurb}.'
+                                : '${season.shortBlurb} · '
+                                  '${reading.locationLabel} ${reading.formatted}';
                             return Text(
-                              reading == null
-                                  ? '${season.shortBlurb}.'
-                                  : '${season.shortBlurb} · '
-                                    '${reading.locationLabel} ${reading.formatted}',
+                              '$_greetingCopy  ·  $tail',
                               style: text.bodySmall?.copyWith(
                                 color:  colors.onSurfaceVariant,
                                 height: 1.5,
@@ -1051,6 +1080,24 @@ class _HomeHeroCardState extends State<_HomeHeroCard> {
             ),
           ],
         ),
+
+        const SizedBox(height: 14),
+
+        // ── Weekly Meal Planner — primary green hero ─────────────────────
+        // Promoted right under the welcome card so "Plan the week" is the
+        // single most visible action on Home. The old Weekly Budget card
+        // that lived here was removed (it was decorative — never wired
+        // into anything else); per-list budgets cover that need today.
+        _MealPlannerBanner(),
+
+        const SizedBox(height: 14),
+
+        // ── Vegan-mode toggle ─────────────────────────────────────────────
+        // Compact pill, full-width-friendly. When ON every scraped /
+        // generated recipe automatically swaps out meat / dairy / eggs
+        // for SA-available vegan alternatives. Lives on the home hero
+        // so it's always one tap away (not buried in settings).
+        const _VeganModePill(),
 
         const SizedBox(height: 22),
 
@@ -1296,6 +1343,8 @@ class _MetadataStrip extends StatelessWidget {
 enum _Season { summer, autumn, winter, spring }
 
 extension _SeasonExt on _Season {
+  // Was the hero eyebrow pre-WS3; kept for the seasonal-dish detail sheet.
+  // ignore: unused_element
   String get eyebrow => switch (this) {
         _Season.summer => 'Summer in Mzansi',
         _Season.autumn => 'Autumn comfort',
@@ -1417,6 +1466,54 @@ class _SeasonalDish {
           _SeasonalDish(emoji: '🥗', name: 'Avo & Biltong Bowl',
             tag: 'no cook · protein',
             gradientStart: Color(0xFFCDE2C6), gradientEnd: Color(0xFF5B8E5C)),
+          // ── Vegan rotation entries ─────────────────────────────────
+          _SeasonalDish(
+            emoji: '🥑', name: 'Vegan Avo-Lime Bowl',
+            tag: 'vegan · no cook · 10 min',
+            gradientStart: Color(0xFFDDF1CF), gradientEnd: Color(0xFF6C9C53),
+            isLoadsheddingFriendly: true,
+            blurb: 'Cold protein bowl built on chickpeas, ripe avo, lime '
+                   'juice and a hit of fresh coriander. Zero stove time.',
+            ingredients: [
+              '2 ripe avocados, cubed',
+              '1 tin chickpeas, drained and rinsed',
+              '1 cup cherry tomatoes, halved',
+              '1 cup cooked brown rice (cold)',
+              '½ cup cucumber, diced',
+              '¼ cup red onion, finely sliced',
+              '2 tbsp lime juice (or lemon)',
+              '2 tbsp olive oil',
+              '1 small bunch coriander, chopped',
+              'Salt and black pepper to taste',
+            ],
+            instructions: [
+              'Toss the cooked rice with olive oil, lime juice, salt and pepper.',
+              'Layer rice in two bowls.',
+              'Top with chickpeas, avo, tomatoes, cucumber and red onion.',
+              'Scatter coriander; squeeze over extra lime; serve cold.',
+            ],
+          ),
+          _SeasonalDish(
+            emoji: '🍉', name: 'Watermelon-Mint Granita',
+            tag: 'vegan · cold · 5 min prep',
+            gradientStart: Color(0xFFFFC8CE), gradientEnd: Color(0xFFD05A6E),
+            isLoadsheddingFriendly: true,
+            blurb: 'Three-ingredient summer pudding. Freeze 3 hours, '
+                   'scrape into icy flakes, serve in glasses with mint.',
+            ingredients: [
+              '6 cups watermelon, deseeded and cubed',
+              '2 tbsp lime juice',
+              '2 tbsp maple syrup (or agave)',
+              '10 fresh mint leaves',
+              'Pinch of sea salt',
+            ],
+            instructions: [
+              'Blend watermelon, lime juice, maple syrup, mint and salt smooth.',
+              'Pour into a shallow tray (about 2 cm deep).',
+              'Freeze 1 hour, then fork-scrape; repeat every 45 min for 3 hours.',
+              'Serve in chilled glasses with extra mint and a lime wedge.',
+            ],
+          ),
         ];
       case _Season.autumn:
         return const [
@@ -1435,6 +1532,68 @@ class _SeasonalDish {
           _SeasonalDish(emoji: '🍞', name: 'Roosterkoek',
             tag: 'braai-grilled bread',
             gradientStart: Color(0xFFF3D9B0), gradientEnd: Color(0xFFB4854A)),
+          // ── Vegan rotation entries ─────────────────────────────────
+          _SeasonalDish(
+            emoji: '🌱', name: 'Vegan Lentil Bobotie',
+            tag: 'vegan · baked · 50 min',
+            gradientStart: Color(0xFFE5D7AC), gradientEnd: Color(0xFF8C7234),
+            blurb: 'Plant-based take on the SA classic. Brown lentils carry '
+                   'the spice, oat-milk + chickpea-flour custard sets golden.',
+            ingredients: [
+              '2 cups cooked brown lentils',
+              '1 onion, finely chopped',
+              '2 garlic cloves, crushed',
+              '1 tbsp Cape Malay curry powder',
+              '1 tsp ground turmeric',
+              '1 tsp ground cumin',
+              '2 slices bread soaked in ½ cup oat milk',
+              '2 tbsp chutney (Mrs Ball\'s)',
+              '2 tbsp raisins',
+              '2 tbsp olive oil',
+              '½ cup oat milk + 2 tbsp chickpea flour (custard)',
+              '2 bay leaves',
+              'Salt and pepper to taste',
+            ],
+            instructions: [
+              'Preheat oven to 180 °C.',
+              'Soften onion and garlic in olive oil over medium heat (6 min).',
+              'Toast curry powder, turmeric and cumin in the pan for 30 sec.',
+              'Mash in the soaked bread, lentils, chutney and raisins; season.',
+              'Spoon into a greased baking dish; top with bay leaves.',
+              'Whisk oat milk + chickpea flour smooth; pour over the lentils.',
+              'Bake 30 min until the custard sets golden brown.',
+              'Serve with yellow rice and sambals.',
+            ],
+          ),
+          _SeasonalDish(
+            emoji: '🍛', name: 'Chickpea Cape Curry',
+            tag: 'vegan · 35 min',
+            gradientStart: Color(0xFFFFD4A8), gradientEnd: Color(0xFFAC6826),
+            isLoadsheddingFriendly: true,
+            blurb: 'Silky stovetop curry — chickpeas finished in oat-milk + '
+                   'mild Robertsons masala. Serve with rice or fresh roti.',
+            ingredients: [
+              '2 tins chickpeas, drained',
+              '1 onion, sliced',
+              '3 garlic cloves, crushed',
+              '1 thumb ginger, grated',
+              '2 tbsp Robertsons mild curry powder',
+              '1 tsp ground cumin',
+              '1 tin chopped tomatoes',
+              '1 cup oat milk',
+              '2 tbsp sunflower oil',
+              'Fresh coriander, to finish',
+              'Salt to taste',
+            ],
+            instructions: [
+              'Heat oil in a pot; sauté onion, garlic and ginger until soft.',
+              'Toast curry powder and cumin for 30 sec — keep stirring.',
+              'Add chopped tomatoes; simmer 5 min until the colour deepens.',
+              'Tip in chickpeas; stir to coat in the masala.',
+              'Pour in oat milk; simmer gently for 15 min until silky.',
+              'Season; top with coriander; serve with rice or roti.',
+            ],
+          ),
         ];
       case _Season.winter:
         // ── SA WINTER (June) ROTATION ───────────────────────────────────────
@@ -2029,6 +2188,72 @@ class _SeasonalDish {
               'Cool to room temperature; chill before slicing.',
             ],
           ),
+          // ── Vegan winter rotation entries ──────────────────────────
+          _SeasonalDish(emoji: '🥕', name: 'Butternut & Bean Potjie',
+            tag: 'vegan · slow · 2 hrs',
+            gradientStart: Color(0xFFFFD79B), gradientEnd: Color(0xFFB76A1F),
+            isBraaiReady: true,
+            isLoadsheddingFriendly: true,
+            blurb: 'Plant-based potjie layered with butternut, kidney beans, '
+                   'mealie, lentils and rooibos broth. Slow-cooked over coals.',
+            ingredients: [
+              '500 g butternut, cubed',
+              '1 tin red kidney beans, drained',
+              '1 tin lentils (or 1 cup dry, pre-soaked)',
+              '1 onion, sliced',
+              '3 cloves garlic, crushed',
+              '2 carrots, chunked',
+              '1 cup frozen mealie kernels',
+              '2 cups vegetable stock (Knorr veg cube)',
+              '1 tbsp tomato paste',
+              '1 tsp ground cumin',
+              '1 tsp smoked paprika',
+              '2 bay leaves',
+              'Salt and pepper to taste',
+            ],
+            instructions: [
+              'Heat oil in the potjie over coals; sweat onions and garlic.',
+              'Add carrots, butternut, cumin and paprika; toss to coat.',
+              'Layer in beans, lentils and mealie. Do NOT stir.',
+              'Pour over stock + tomato paste; tuck in bay leaves.',
+              'Cover and cook over low coals for 1.5–2 hrs without lifting the lid.',
+              'Season; serve with pap or roosterkoek (use Flora Plant butter).',
+            ],
+          ),
+          _SeasonalDish(
+            emoji: '🍲', name: 'Vegan Tomato Bredie',
+            tag: 'vegan · stovetop · 45 min',
+            gradientStart: Color(0xFFFFB89A), gradientEnd: Color(0xFFB94C2C),
+            isLoadsheddingFriendly: true,
+            blurb: 'Slow-cooked tomato stew on a gas hob. Soy mince and '
+                   'butter beans give it the body lamb usually carries.',
+            ingredients: [
+              '2 onions, sliced',
+              '3 garlic cloves, crushed',
+              '500 g Fry\'s Soy Mince (frozen)',
+              '1 tin butter beans, drained',
+              '1 tin chopped tomatoes',
+              '2 tbsp tomato paste',
+              '2 cups vegetable stock (Knorr veg cube)',
+              '1 tbsp smoked paprika',
+              '1 tsp ground cumin',
+              '1 tsp dried mixed herbs',
+              '2 bay leaves',
+              '2 tbsp olive oil',
+              '1 tsp brown sugar',
+              'Salt and black pepper to taste',
+            ],
+            instructions: [
+              'Heat olive oil; sweat onions and garlic over medium heat (8 min).',
+              'Add soy mince; brown for 4 min, stirring to break up clumps.',
+              'Stir in paprika, cumin and herbs; toast for 30 sec.',
+              'Add tomato paste, chopped tomatoes, stock and bay leaves.',
+              'Tip in butter beans and brown sugar; season.',
+              'Cover and simmer 30 min, stirring occasionally.',
+              'Uncover for the last 5 min to thicken.',
+              'Serve over rice, samp or with a hunk of roosterkoek.',
+            ],
+          ),
         ];
       case _Season.spring:
         return const [
@@ -2044,6 +2269,64 @@ class _SeasonalDish {
           _SeasonalDish(emoji: '🥗', name: 'Mediterranean Salad',
             tag: 'fresh · 15 min',
             gradientStart: Color(0xFFC9DDC0), gradientEnd: Color(0xFF4F7B4C)),
+          _SeasonalDish(
+            emoji: '🌱', name: 'Vegan Spring Pesto Pasta',
+            tag: 'vegan · 20 min',
+            gradientStart: Color(0xFFCEE5B2), gradientEnd: Color(0xFF4F823E),
+            blurb: 'Bright spring pesto built on basil, rocket and toasted '
+                   'cashews. Tossed with spaghetti, peas and lemon zest.',
+            ingredients: [
+              '400 g spaghetti',
+              '2 cups fresh basil leaves',
+              '1 cup rocket',
+              '½ cup raw cashews, toasted',
+              '2 garlic cloves',
+              '½ cup olive oil',
+              '2 tbsp nutritional yeast (or omit)',
+              '2 tbsp lemon juice + zest of 1 lemon',
+              '1 cup frozen peas',
+              'Salt and black pepper to taste',
+            ],
+            instructions: [
+              'Boil spaghetti in salted water per pack; reserve ½ cup pasta water.',
+              'Add frozen peas to the pot for the last 2 min; drain.',
+              'Blend basil, rocket, cashews, garlic, olive oil, yeast, lemon '
+                  'juice, salt and pepper into a coarse pesto.',
+              'Toss hot pasta with pesto; loosen with pasta water as needed.',
+              'Finish with lemon zest and extra rocket on top.',
+            ],
+          ),
+          _SeasonalDish(
+            emoji: '🥬', name: 'Tofu-Feta Spinach Phyllo',
+            tag: 'vegan · crispy · 35 min',
+            gradientStart: Color(0xFFDFE9C5), gradientEnd: Color(0xFF6B8B4E),
+            blurb: 'Crisp phyllo parcels filled with herby spinach and '
+                   'tangy tofu "feta". Bakes golden in 25 min.',
+            ingredients: [
+              '300 g firm tofu, crumbled',
+              '2 tbsp lemon juice',
+              '2 tbsp white miso (or 1 tsp salt)',
+              '500 g fresh spinach, wilted and drained',
+              '1 onion, finely chopped',
+              '2 garlic cloves, crushed',
+              '2 tbsp fresh dill, chopped',
+              '1 tsp dried oregano',
+              '1 packet phyllo pastry',
+              '½ cup olive oil (for brushing)',
+              'Salt and black pepper to taste',
+            ],
+            instructions: [
+              'Preheat oven to 200 °C.',
+              'Mix crumbled tofu with lemon juice, miso, salt and pepper — '
+                  'this is the vegan "feta". Rest 10 min.',
+              'Soften onion and garlic in 2 tbsp oil; stir in wilted spinach.',
+              'Off the heat, fold in tofu-feta, dill and oregano.',
+              'Stack 3 phyllo sheets, brushing oil between each; cut into strips.',
+              'Spoon filling on one end of each strip; fold flag-style into '
+                  'triangles.',
+              'Brush with olive oil; bake 20-25 min until deep golden.',
+            ],
+          ),
           _SeasonalDish(emoji: '🍋', name: 'Lemon Herb Snoek',
             tag: 'braai · Cape',
             gradientStart: Color(0xFFE8E1A8), gradientEnd: Color(0xFF9A8A28)),
@@ -2070,7 +2353,10 @@ enum _PowerBadge {
   ),
   loadshedding(
     icon:  Icons.bolt_rounded,
-    label: 'Load-Shedding Friendly',
+    // Wording simplified per spec — "Load-Shedding Friendly" was too
+    // South-Africa-context-loaded for the badge surface. Same flag,
+    // same logic, friendlier label.
+    label: 'Gas / Braai Ready',
     fg:    Color(0xFF0C351E),
     bg:    Color(0xFFD8ECDD),
   ),
@@ -2099,6 +2385,9 @@ class _PowerStatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Hidden per user request — see pantry_screen._LoadsheddingBadge.
+    return const SizedBox.shrink();
+    // ignore: dead_code
     return Container(
       padding: const EdgeInsets.fromLTRB(6, 3, 7, 3),
       decoration: BoxDecoration(
@@ -2148,6 +2437,32 @@ class _SeasonalDishCard extends StatefulWidget {
   State<_SeasonalDishCard> createState() => _SeasonalDishCardState();
 }
 
+Widget _dishGradientHeader(_SeasonalDish d) => Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [d.gradientStart, d.gradientEnd],
+          begin: Alignment.topLeft,
+          end:   Alignment.bottomRight,
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Text(d.emoji, style: const TextStyle(fontSize: 36)),
+    );
+
+/// Detail-sheet hero variant — same gradient + emoji, sized larger so
+/// it matches the photo it falls back from.
+Widget _seasonalGradientHero(_SeasonalDish d) => Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [d.gradientStart, d.gradientEnd],
+          begin: Alignment.topLeft,
+          end:   Alignment.bottomRight,
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Text(d.emoji, style: const TextStyle(fontSize: 56)),
+    );
+
 class _SeasonalDishCardState extends State<_SeasonalDishCard> {
   bool _pressed = false;
 
@@ -2182,20 +2497,10 @@ class _SeasonalDishCardState extends State<_SeasonalDishCard> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
+                    SizedBox(
                       height: 76,
                       width:  double.infinity,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [widget.dish.gradientStart,
-                                   widget.dish.gradientEnd],
-                          begin: Alignment.topLeft,
-                          end:   Alignment.bottomRight,
-                        ),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(widget.dish.emoji,
-                          style: const TextStyle(fontSize: 36)),
+                      child: _dishGradientHeader(widget.dish),
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
@@ -2253,7 +2558,9 @@ class _SeasonalDishDetailSheet extends StatefulWidget {
   });
 
   final _SeasonalDish    dish;
-  final Future<void> Function() onSave;
+  /// Receives the resolved hero photo URL (or null when none was found)
+  /// so the saved Recipe carries the same image the sheet displayed.
+  final Future<void> Function(String? imageUrl) onSave;
 
   @override
   State<_SeasonalDishDetailSheet> createState() =>
@@ -2262,8 +2569,8 @@ class _SeasonalDishDetailSheet extends StatefulWidget {
 
 class _SeasonalDishDetailSheetState
     extends State<_SeasonalDishDetailSheet> {
-  bool _saving  = false;
-  bool _saved   = false;
+  bool    _saving  = false;
+  bool    _saved   = false;
 
   @override
   void initState() {
@@ -2310,7 +2617,7 @@ class _SeasonalDishDetailSheetState
     // Repository call lives in its own try so a DB / network failure can't
     // halt the UI thread or leave the spinner stuck.
     try {
-      await widget.onSave();
+      await widget.onSave(null);
     } catch (_) {
       if (mounted) setState(() => _saving = false);
       return;
@@ -2391,41 +2698,39 @@ class _SeasonalDishDetailSheetState
                 padding: const EdgeInsets.fromLTRB(24, 16, 24, 120),
                 children: [
 
-                  // Hero gradient tile
-                  Container(
-                    height: 160,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(22),
-                      gradient: LinearGradient(
-                        begin:  Alignment.topLeft,
-                        end:    Alignment.bottomRight,
-                        colors: [dish.gradientStart, dish.gradientEnd],
-                      ),
-                    ),
-                    alignment: Alignment.center,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(dish.emoji,
-                            style: const TextStyle(fontSize: 56)),
-                        const SizedBox(height: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.20),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            dish.tag,
-                            style: const TextStyle(
-                              color:      Colors.white,
-                              fontSize:   11,
-                              fontWeight: FontWeight.w700,
+                  // Hero — gradient + emoji (photo-lookup ripped 2026-06-23).
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(22),
+                    child: SizedBox(
+                      height: 160,
+                      width:  double.infinity,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _seasonalGradientHero(dish),
+                          Positioned(
+                            left: 0, right: 0, bottom: 10,
+                            child: Center(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.45),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Text(
+                                  dish.tag,
+                                  style: const TextStyle(
+                                    color:      Colors.white,
+                                    fontSize:   11,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -2442,54 +2747,6 @@ class _SeasonalDishDetailSheetState
                           ),
                         ),
                       ),
-                      if (dish.isBraaiReady)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color:        const Color(0xFFBF360C),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.outdoor_grill_rounded,
-                                  color: Colors.white, size: 12),
-                              SizedBox(width: 4),
-                              Text('Braai Ready',
-                                  style: TextStyle(
-                                    color:      Colors.white,
-                                    fontSize:   10,
-                                    fontWeight: FontWeight.w700,
-                                  )),
-                            ],
-                          ),
-                        ),
-                      if (dish.isLoadsheddingFriendly) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF0C351E),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.power_off_rounded,
-                                  color: Color(0xFF6FCF97), size: 12),
-                              SizedBox(width: 4),
-                              Text('Gas/Braai/No Power Ready',
-                                  style: TextStyle(
-                                    color:      Color(0xFF6FCF97),
-                                    fontSize:   10,
-                                    fontWeight: FontWeight.w700,
-                                  )),
-                            ],
-                          ),
-                        ),
-                      ],
                     ],
                   ),
 
@@ -3624,6 +3881,9 @@ class _LoadsheddingBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Hidden per user request — see pantry_screen._LoadsheddingBadge.
+    return const SizedBox.shrink();
+    // ignore: dead_code
     final bg    = friendly ? _greenBg : _greyBg;
     final fg    = friendly ? _greenFg : _greyFg;
     // power_off = "no mains power needed" (works for raw/cold AND braai-adapted titles).
@@ -3662,6 +3922,9 @@ class _BraaiReadyBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Hidden per user request alongside the loadshedding badge.
+    return const SizedBox.shrink();
+    // ignore: dead_code
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
       decoration: BoxDecoration(
@@ -4059,33 +4322,6 @@ class _MealPlanCard extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 6),
-
-          // ── Loadshedding micro-badge ───────────────────────────────────
-          Row(
-            children: [
-              Icon(
-                recipe.isLoadsheddingFriendly
-                    ? Icons.local_fire_department_rounded
-                    : Icons.bolt_rounded,
-                size: 12,
-                color: recipe.isLoadsheddingFriendly
-                    ? const Color(0xFF6FCF97)
-                    : colors.onSurfaceVariant.withValues(alpha: 0.5),
-              ),
-              const SizedBox(width: 4),
-              Text(
-                recipe.isLoadsheddingFriendly ? 'Braai Ready' : 'Needs Power',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: recipe.isLoadsheddingFriendly
-                      ? const Color(0xFF6FCF97)
-                      : colors.onSurfaceVariant.withValues(alpha: 0.5),
-                ),
-              ),
-            ],
-          ),
         ],
       ),
     );
@@ -4108,6 +4344,7 @@ class _HomeIdleView extends StatelessWidget {
     this.urlController,
     this.onPasteUrl,
     this.onSubmitUrl,
+    this.onGenerateByName,
   });
 
   final List<SavedCommunityRecipe> savedRecipes;
@@ -4118,149 +4355,62 @@ class _HomeIdleView extends StatelessWidget {
   final TextEditingController?     urlController;
   final VoidCallback?              onPasteUrl;
   final VoidCallback?              onSubmitUrl;
+  /// Hooked to ScraperService.generateRecipeFromName via the parent
+  /// state. Drives the "Generate any recipe" home card.
+  final Future<void> Function(String name)? onGenerateByName;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // ── Loadshedding signature card — v3.0 ────────────────────────────
-        // POWER ON CTA routes to the new LocalBraaiHubView — the dedicated
-        // braai-content destination. Previously this dumped the user into
-        // MyRecipesScreen(braaiOnly: true), which broke the mental model
-        // ("Browse Braai Recipes" should land in a braai hub, not the
-        // personal cookbook).
-        //
-        // POWER OFF CTA still routes to the Community tab for now — until we
-        // add a `gasHobOnly` filter equivalent to braaiOnly.
-        _LoadsheddingSignatureCard(
-          onSeeBraaiRecipes: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => const LocalBraaiHubView(),
-            ),
-          ),
-          onSeeQuickMeals:   () => onNavigateToTab?.call(3),
-        ),
-        const SizedBox(height: 16),
+        // WS3: the loadshedding "POWER ON / Fire Up the Grid" surface is no
+        // longer the home headline. The full _LoadsheddingSignatureCard
+        // widget, service, and badges remain intact — WS5 relocates this
+        // card into Community where it stays a useful playful extra (the
+        // Load-Shedding Friendly recipe filter is unaffected).
+
+        // ── Generate any recipe by name ──────────────────────────────────
+        // Promoted to the top of this idle feed (was below the Link
+        // Scanner) so the green-hero family — Meal Planner above ·
+        // Generate Recipe here — leads the screen together.
+        if (onGenerateByName != null) ...[
+          _RecipeNameGeneratorCard(onGenerate: onGenerateByName!),
+          const SizedBox(height: 16),
+        ],
 
         // ── LINK SCANNER — HERO CARD ───────────────────────────────────────
-        // Premium full-width hero anchoring the top of the dashboard feed.
-        // Highest-priority CTA on the screen: deep gradient backdrop,
-        // 44 pt accent icon, headline + subhead copy, a white input pill
-        // with paste/camera tools, and a prominent "Scan Now →" chip.
-        // Replaces the slim inline paste bar that used to compete with the
-        // Meal Planner banner for visual weight.
         _LinkScannerHero(
           urlController: urlController,
           onPasteUrl:    onPasteUrl,
           onScanCookbook: onScanCookbook,
           onSubmitUrl:   onSubmitUrl,
         ),
+        const SizedBox(height: 16),
+
+        // ── My Recipes — single restyled pastel tile ─────────────────────
+        // The Shopping/Pantry/Community tiles were redundant with the
+        // bottom-nav destinations, so the 2×2 grid is gone. My Recipes
+        // stays because the Profile-tab cookbook isn't visible from here.
+        ValueListenableBuilder<int>(
+          valueListenable: RecipeRepository.instance.updateNotifier,
+          builder: (_, __, ___) => FutureBuilder<int>(
+            initialData: savedRecipes.length,
+            future:      RecipeRepository.instance.countAll(),
+            builder: (_, snap) {
+              final n = snap.data ?? 0;
+              return _MyRecipesPastelTile(
+                count:  n,
+                onTap:  onOpenCookbook ?? () {},
+              );
+            },
+          ),
+        ),
         const SizedBox(height: 18),
 
         // ── SMART SUGGESTIONS — feature-flagged AI meal-idea card ─────────
         // Self-gates on `profiles.feature_flags->>'smart_suggestions'`.
-        // Returns SizedBox.shrink for any user without the flag, so it
-        // costs one cheap profile read on home-mount for everyone else.
         const SmartSuggestionsCard(),
-        const SizedBox(height: 18),
-
-        // ── Quick-nav 2 × 2 grid ───────────────────────────────────────────
-        // Responsive aspect ratio. The previous fixed 1.35 ratio meant
-        // tiles on a Samsung A54 (≈360 dp) were ~12 dp too short for the
-        // two-line subtitle — hence the BOTTOM OVERFLOWED stripe. We now
-        // size each tile so its height is fixed at ~115 dp (enough room
-        // for the icon + title + 2 lines + the safety margin) and let
-        // the aspect ratio fall out of that. Wider screens get squarer
-        // tiles, narrower screens get taller tiles automatically.
-        LayoutBuilder(builder: (ctx, constraints) {
-          const targetHeight   = 115.0;
-          const crossAxisCount = 2;
-          const spacing        = 12.0;
-          final tileWidth =
-              (constraints.maxWidth - spacing * (crossAxisCount - 1)) /
-                  crossAxisCount;
-          // Clamp so we never get absurd ratios on landscape / foldables.
-          final aspect = (tileWidth / targetHeight).clamp(0.95, 1.4);
-          return GridView.count(
-          shrinkWrap:       true,
-          physics:          const NeverScrollableScrollPhysics(),
-          crossAxisCount:   crossAxisCount,
-          mainAxisSpacing:  spacing,
-          crossAxisSpacing: spacing,
-          childAspectRatio: aspect,
-          children: [
-            _BentoTile(
-              icon:      Icons.kitchen_rounded,
-              title:     'My Pantry',
-              subtitle:  'Match recipes to your fridge',
-              bgColor:   const Color(0xFFE8F5E9),
-              iconColor: const Color(0xFF0C351E),
-              onTap:     () => onNavigateToTab?.call(1),
-            ),
-            _BentoTile(
-              icon:      Icons.shopping_cart_rounded,
-              title:     'Shopping List',
-              subtitle:  'Plan your grocery run',
-              bgColor:   const Color(0xFFE3F2FD),
-              iconColor: const Color(0xFF1565C0),
-              onTap:     () => onNavigateToTab?.call(2),
-            ),
-            _BentoTile(
-              icon:      Icons.groups_rounded,
-              title:     'Community',
-              subtitle:  'See what SA is cooking',
-              bgColor:   const Color(0xFFF3E5F5),
-              iconColor: const Color(0xFF6A1B9A),
-              onTap:     () => onNavigateToTab?.call(3),
-            ),
-            // ── My Recipes tile — LIVE saved count ─────────────────────────
-            //
-            // Previously bound to the SharedPreferences-cached `savedRecipes`
-            // list (community-feed bookmarks), which could drift out of sync
-            // with the actual `recipes` table — that's why this tile showed
-            // "1 saved" while the Profile tab correctly showed "0 saved".
-            //
-            // Now bound to the SAME live engine the Profile bento tile uses:
-            //   • ValueListenableBuilder<int> listens to
-            //     RecipeRepository.instance.updateNotifier, which ticks on
-            //     every insert / update / delete in the `recipes` table
-            //   • FutureBuilder<int> re-runs RecipeRepository.countAll() —
-            //     which executes `.count(CountOption.exact)` against
-            //     `recipes` filtered by auth.uid()
-            //   • Cold-start fallback: initialData = savedRecipes.length so
-            //     the tile renders instantly with a plausible value before
-            //     the COUNT round-trips
-            ValueListenableBuilder<int>(
-              valueListenable: RecipeRepository.instance.updateNotifier,
-              builder: (_, __, ___) => FutureBuilder<int>(
-                initialData: savedRecipes.length,
-                future:      RecipeRepository.instance.countAll(),
-                builder: (_, snap) {
-                  final n = snap.data ?? 0;
-                  return _BentoTile(
-                    icon:      Icons.menu_book_rounded,
-                    title:     'My Recipes',
-                    subtitle:  n == 0
-                        ? 'Start saving recipes'
-                        : '$n saved',
-                    bgColor:   const Color(0xFFFFF9C4),
-                    iconColor: const Color(0xFFFF8F00),
-                    onTap:     onOpenCookbook ?? () {},
-                  );
-                },
-              ),
-            ),
-          ],
-        );
-        }),
-        const SizedBox(height: 16),
-
-        // ── Weekly Meal Planner banner ─────────────────────────────────────
-        // Full-width card sitting directly below the 2×2 grid, above the
-        // daily tip. Tapping anywhere on the banner navigates to MealPlannerScreen.
-        _MealPlannerBanner(),
-
         const SizedBox(height: 16),
 
         // ── SA daily tip ───────────────────────────────────────────────────
@@ -4271,92 +4421,95 @@ class _HomeIdleView extends StatelessWidget {
 }
 
 // =============================================================================
-// _BentoTile — individual quick-action card
+// _MyRecipesPastelTile — single My Recipes shortcut for the home feed
 // =============================================================================
+//
+// Replaces the My Recipes slot from the old 2×2 bento grid. Pastel mango
+// surface with a mango accent so it sits in the same palette family as
+// the dish carousel without competing with the green hero stack above.
 
-class _BentoTile extends StatelessWidget {
-  const _BentoTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.bgColor,
-    required this.iconColor,
-    required this.onTap,
-  });
+class _MyRecipesPastelTile extends StatelessWidget {
+  const _MyRecipesPastelTile({required this.count, required this.onTap});
 
-  final IconData     icon;
-  final String       title;
-  final String       subtitle;
-  final Color        bgColor;
-  final Color        iconColor;
-  final VoidCallback? onTap;
+  final int          count;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding:    const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color:        bgColor,
-          borderRadius: BorderRadius.circular(22),
-          boxShadow: const [
-            BoxShadow(
-              color:      Color(0x0A000000),
-              blurRadius: 6,
-              offset:     Offset(0, 2),
+    return Material(
+      color:        Colors.transparent,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(18, 14, 16, 14),
+          decoration: BoxDecoration(
+            color:        const Color(0xFFFFF1D6),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: const Color(0xFFE59B27).withAlpha(70),
             ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width:  38,
-              height: 38,
-              decoration: BoxDecoration(
-                color:        iconColor.withAlpha(25),
-                borderRadius: BorderRadius.circular(12),
+            boxShadow: const [
+              BoxShadow(
+                color:      Color(0x14E59B27),
+                blurRadius: 14,
+                offset:     Offset(0, 6),
               ),
-              child: Icon(icon, color: iconColor, size: 20),
-            ),
-            const Spacer(),
-            Text(
-              title,
-              style: tt.titleSmall?.copyWith(
-                fontWeight: FontWeight.w800,
-                // onSurface flips automatically: charcoal in light,
-                // near-white in dark — never hardcode 0xFF111111 here.
-                color:   Theme.of(context).colorScheme.onSurface,
-                fontSize: 13,
-              ),
-              maxLines:  1,
-              overflow:  TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 3),
-            // Flexible lets the subtitle shrink-and-ellipsis without
-            // throwing an overflow stripe if the responsive aspect ratio
-            // still ends up a pixel tight on an exotic small screen.
-            Flexible(
-              child: Text(
-                subtitle,
-                style: tt.bodySmall?.copyWith(
-                  color:   Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontSize: 11,
-                  height:   1.3,
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44, height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color:        const Color(0xFFE59B27),
+                  borderRadius: BorderRadius.circular(13),
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+                child: const Icon(
+                  Icons.menu_book_rounded,
+                  color: Colors.white,
+                  size:  22,
+                ),
               ),
-            ),
-          ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'My Recipes',
+                      style: tt.titleMedium?.copyWith(
+                        color:      const Color(0xFF6B3A07),
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      count == 0
+                          ? 'Start saving recipes you love.'
+                          : '$count saved · tap to open your cookbook',
+                      style: tt.bodySmall?.copyWith(
+                        color: const Color(0xFFB14A2A),
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded,
+                  color: Color(0xFFB14A2A), size: 22),
+            ],
+          ),
         ),
       ),
     );
   }
 }
+
 
 // =============================================================================
 // _MealPlannerBanner — full-width tap-to-open entry point for MealPlannerScreen
@@ -4618,18 +4771,13 @@ class _MealPlannerBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-
-    // cs.primary   = avocado in light, light-avocado in dark (always legible)
-    // cs.onSurface = charcoal in light, near-white in dark (title contrast)
-    // cs.onSurfaceVariant = graphite in light, grey in dark (subtitle contrast)
 
     return Material(
       color:        Colors.transparent,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(20),
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute<void>(
@@ -4637,70 +4785,72 @@ class _MealPlannerBanner extends StatelessWidget {
           ),
         ),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+          padding: const EdgeInsets.fromLTRB(18, 16, 16, 16),
           decoration: BoxDecoration(
-            color:        cs.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(16),
-            border:       Border.all(
-              color: cs.primary.withAlpha(40),
+            borderRadius: BorderRadius.circular(20),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end:   Alignment.bottomRight,
+              colors: [Color(0xFF0C351E), Color(0xFF205B4A)],
             ),
+            boxShadow: const [
+              BoxShadow(
+                  color: Color(0x33000000),
+                  blurRadius: 14,
+                  offset: Offset(0, 6)),
+            ],
           ),
           child: Row(
             children: [
-              // ── Icon circle ─────────────────────────────────────────────
               Container(
-                width:  44,
-                height: 44,
+                width: 48, height: 48,
+                alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color:        cs.primary.withAlpha(20),
-                  borderRadius: BorderRadius.circular(12),
+                  color:        const Color(0xFFE59B27),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(
+                child: const Icon(
                   Icons.calendar_month_rounded,
-                  color: cs.primary,
-                  size:  22,
+                  color: Colors.white,
+                  size:  24,
                 ),
               ),
               const SizedBox(width: 14),
-
-              // ── Text column ──────────────────────────────────────────────
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'Weekly Menu Planner',
-                      style: tt.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        fontSize:   16,
-                        // cs.onSurface switches automatically:
-                        //   Light → #222222 (charcoal)
-                        //   Dark  → #E8EDE9 (near-white)
-                        color: cs.onSurface,
+                      'WEEKLY MEAL PLANNER',
+                      style: tt.labelSmall?.copyWith(
+                        color:         const Color(0xFFFFD7A8),
+                        letterSpacing: 1.4,
+                        fontWeight:    FontWeight.w900,
                       ),
                     ),
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 4),
                     Text(
-                      'Plan out your week of Mzansi meals',
+                      'Plan the week',
+                      style: tt.headlineSmall?.copyWith(
+                        color:      Colors.white,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Map out your Mzansi meals · auto-shopping list.',
                       style: tt.bodySmall?.copyWith(
-                        // cs.onSurfaceVariant switches automatically:
-                        //   Light → #5C5C5C (graphite)
-                        //   Dark  → #9FA9A3 (light grey)
-                        color:  cs.onSurfaceVariant,
-                        fontSize: 13,
-                        height:   1.3,
+                        color: const Color(0xFFA8D2BB),
+                        height: 1.35,
                       ),
                     ),
                   ],
                 ),
               ),
-
-              // ── Chevron ──────────────────────────────────────────────────
-              Icon(
-                Icons.chevron_right_rounded,
-                color: cs.onSurfaceVariant.withAlpha(140),
-                size:  24,
-              ),
+              const Icon(Icons.chevron_right_rounded,
+                  color: Colors.white70, size: 24),
             ],
           ),
         ),
@@ -4709,577 +4859,11 @@ class _MealPlannerBanner extends StatelessWidget {
   }
 }
 
-// =============================================================================
-// _LoadsheddingSignatureCard — v3.0 two-state power-status hero
-// =============================================================================
-//
-// Wires LoadsheddingService (unchanged data source — EskomSePush + cache +
-// suburb resolution via Geolocator) and renders ONE of two distinct UI states:
-//
-//   STATE A — POWER ON  (no active loadshedding window in current suburb)
-//     • Cream surface, hairline border, NO drop shadow
-//     • Avocado-green vertical accent line on the left edge
-//     • Copy: "Braai's back on the menu 🔥"
-//     • Avocado primary CTA → "Browse Braai Recipes" (routes to Community)
-//
-//   STATE B — POWER OFF  (loadshedding actively impacting the suburb)
-//     • Cream surface, soft warning border (mango at 60% alpha)
-//     • Mango status pill showing stage + current slot
-//     • Copy: "Quick stovetop meals ready in 20 min 🔋"
-//     • Mango primary CTA → "Show Gas-Hob Meals" (signals filter intent)
-//
-// Both states share a dotted-waveform background painted via CustomPainter at
-// ~5% opacity — gives the card a subtle power-waveform texture that reads as
-// brand identity without dominating the foreground content.
+// WS5: the LoadsheddingSignatureCard widget + its private helpers
+// (_LsStatusPill, _DottedWaveformPainter) were extracted to
+// lib/widgets/loadshedding_signature_card.dart as a public widget so
+// CommunityHubScreen can mount the same card. Behaviour is unchanged.
 
-class _LoadsheddingSignatureCard extends StatefulWidget {
-  const _LoadsheddingSignatureCard({
-    this.onSeeBraaiRecipes,
-    this.onSeeQuickMeals,
-  });
-
-  /// Fired when the user taps the CTA in the POWER ON state.
-  /// Parent should route to the Community / Braai-Ready recipe filter.
-  final VoidCallback? onSeeBraaiRecipes;
-
-  /// Fired when the user taps the CTA in the POWER OFF state.
-  /// Parent should route to a gas-hob / no-electricity filtered recipe view.
-  final VoidCallback? onSeeQuickMeals;
-
-  @override
-  State<_LoadsheddingSignatureCard> createState() =>
-      _LoadsheddingSignatureCardState();
-}
-
-class _LoadsheddingSignatureCardState
-    extends State<_LoadsheddingSignatureCard>
-    with WidgetsBindingObserver {
-  final _service = LoadsheddingService();
-  LoadsheddingStatus? _status;
-  bool _locationDenied = false;
-
-  /// Last permission state we observed. Used by the lifecycle observer to
-  /// detect a grant-while-backgrounded transition (the user dismissed the
-  /// dialog or toggled "Allow" in OS Settings without restarting the app).
-  LocationPermission _lastPerm = LocationPermission.denied;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _requestLocationThenFetch();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  /// First-install / cold-boot permission + fetch flow.
-  ///
-  ///   1. Explicitly await the user's response to the OS permission dialog
-  ///      via [Geolocator.requestPermission] — equivalent to
-  ///      `Permission.location.request()` from permission_handler. The
-  ///      await guarantees getStatus() never fires while the dialog is
-  ///      still on screen, which is what caused the "Cape Town (default)"
-  ///      ghost on a brand-new install.
-  ///   2. If the resulting status is granted (or grantedAlways), do a
-  ///      FORCED refresh so we bypass any stale cache that was written
-  ///      during a prior denied-permission session, then setState
-  ///      immediately so the card paints with the real suburb.
-  ///   3. If denied / deniedForever, still call getStatus() so the card
-  ///      renders with the fallback suburb instead of staying on the
-  ///      loading skeleton forever.
-  Future<void> _requestLocationThenFetch() async {
-    LocationPermission perm = LocationPermission.denied;
-    try {
-      // Route through the app-wide gate. Several services (LocalHubService,
-      // WeatherService, etc.) bootstrap permission at the same time on cold
-      // open — the gate guarantees only ONE OS dialog is ever shown.
-      perm = await LocationPermissionGate.instance.ensure();
-    } catch (_) {
-      // GPS unavailable (emulator without location, no Play Services, …).
-      // We still want to render the card with the fallback suburb.
-    }
-
-    _lastPerm = perm;
-    if (!mounted) return;
-
-    if (perm == LocationPermission.deniedForever) {
-      setState(() => _locationDenied = true);
-    } else {
-      // Clear the soft-deny flag if the user just granted from a prior
-      // denied state.
-      if (_locationDenied) setState(() => _locationDenied = false);
-    }
-
-    // Forced refresh when we just acquired permission — otherwise a stale
-    // cache from the previous session ("Cape Town (default)") would mask
-    // the fresh GPS resolve.
-    final justGranted = perm == LocationPermission.whileInUse
-                     || perm == LocationPermission.always;
-    final status = await _service.getStatus(forceRefresh: justGranted);
-    if (!mounted) return;
-    setState(() => _status = status);
-  }
-
-  /// Lifecycle observer fallback.
-  ///
-  /// Triggered when the app returns to the foreground. Two scenarios this
-  /// catches that initState alone can't:
-  ///   • User dismissed the permission dialog without choosing (Android
-  ///     back-button), then later opened OS Settings and granted manually.
-  ///   • User initially denied, then changed their mind via Settings.
-  /// In both cases the permission transitioned from denied → granted while
-  /// the app was backgrounded. We rerun the fetch on resume so the suburb
-  /// updates without an app restart.
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state != AppLifecycleState.resumed) return;
-
-    // Cheap permission re-check (no dialog) — only force a re-fetch when
-    // the state actually changed from denied to granted, otherwise we'd
-    // hammer the Eskom API on every app foreground.
-    Geolocator.checkPermission().then((perm) {
-      if (!mounted) return;
-      final wasGranted = _lastPerm == LocationPermission.whileInUse
-                      || _lastPerm == LocationPermission.always;
-      final nowGranted = perm == LocationPermission.whileInUse
-                      || perm == LocationPermission.always;
-      _lastPerm = perm;
-      if (!wasGranted && nowGranted) {
-        // Transition denied → granted while backgrounded. Refresh cleanly.
-        if (_locationDenied) setState(() => _locationDenied = false);
-        _refresh();
-      }
-    });
-  }
-
-  Future<void> _refresh() async {
-    if (mounted) setState(() => _status = null);
-    try {
-      final status = await _service.getStatus(forceRefresh: true);
-      if (mounted) setState(() => _status = status);
-    } catch (_) {
-      if (mounted && _status == null) {
-        setState(() => _status = LoadsheddingStatus(
-          isActive: false, stage: 0, todaySlots: [],
-          daysFree: 0, source: 'offline',
-        ));
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final s = _status;
-
-    // ── Loading skeleton — minimal, on-theme ─────────────────────────────
-    if (s == null) {
-      return Container(
-        height: 168,
-        decoration: BoxDecoration(
-          color:        AppTheme.kCreamSand,
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(
-            color: AppTheme.kHairline,
-            width: 1,
-          ),
-        ),
-        alignment: Alignment.center,
-        // SizedBox is not const here because CircularProgressIndicator's
-        // `color` arg flows from AppTheme.kBottleGreen — a chain of
-        // `static const Color X = Y.z` aliases that Dart's compile-time
-        // analyzer doesn't always treat as a const expression in const
-        // constructor contexts. Dropping `const` from this parent is a
-        // ~zero-cost runtime allocation and resolves the build break.
-        child: SizedBox(
-          width: 22, height: 22,
-          child: CircularProgressIndicator(
-            strokeWidth: 2.4,
-            color:       AppTheme.kBottleGreen,
-          ),
-        ),
-      );
-    }
-
-    // Branch on power state — entirely different layouts per spec.
-    return s.isActive ? _buildPowerOff(s) : _buildPowerOn(s);
-  }
-
-  // ───────────────────────────────────────────────────────────────────────
-  //   STATE A — POWER ON
-  // ───────────────────────────────────────────────────────────────────────
-
-  Widget _buildPowerOn(LoadsheddingStatus s) {
-    final text   = Theme.of(context).textTheme;
-    final colors = Theme.of(context).colorScheme;
-
-    return Container(
-      decoration: BoxDecoration(
-        color:        AppTheme.kCreamSand,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppTheme.kHairline, width: 1),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
-        children: [
-          // Subtle dotted waveform texture in avocado at ~5% alpha
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _DottedWaveformPainter(
-                color:    AppTheme.kBottleGreen.withAlpha(28),
-                spacing:  18,
-                amplitude:14,
-              ),
-            ),
-          ),
-          // Avocado vertical accent line on the left edge
-          Positioned(
-            left: 0, top: 14, bottom: 14,
-            child: Container(
-              width: 4,
-              decoration: BoxDecoration(
-                color:        AppTheme.kBottleGreen,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 18, 18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Status pill — green dot + "POWER ON"
-                Row(
-                  children: [
-                    _LsStatusPill(
-                      color: AppTheme.kBottleGreen,
-                      icon:  Icons.bolt_rounded,
-                      label: 'POWER ON',
-                    ),
-                    const SizedBox(width: 8),
-                    if (s.daysFree > 0)
-                      _LsStatusPill(
-                        color: colors.onSurfaceVariant,
-                        label: '${s.daysFree}d loadshedding-free',
-                      )
-                    else if (s.source != 'offline')
-                      _LsStatusPill(
-                        color: colors.onSurfaceVariant,
-                        label: _locationDenied
-                            ? 'Cape Town · default'
-                            : s.displaySuburb,
-                      ),
-                    const Spacer(),
-                    GestureDetector(
-                      onTap: _refresh,
-                      child: Icon(
-                        Icons.refresh_rounded,
-                        size:  18,
-                        color: colors.onSurfaceVariant.withAlpha(160),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                // Headline
-                Text(
-                  'Fire Up the Grid 🔥',
-                  style: text.headlineSmall?.copyWith(
-                    fontWeight:    FontWeight.w900,
-                    color:         AppTheme.kBottleGreen,
-                    letterSpacing: -0.3,
-                    height:        1.2,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Coals stay hot tonight. Full electrical menu available — '
-                  'oven, hob, microwave all good to go.',
-                  style: text.bodySmall?.copyWith(
-                    color:  colors.onSurfaceVariant,
-                    height: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // Avocado-anchored CTA — overrides the global gold theme
-                // because the surrounding card already lives on cream + has
-                // a green accent line; the green CTA visually reinforces the
-                // "all-clear" semantic instead of competing with it.
-                GestureDetector(
-                  onTap: widget.onSeeBraaiRecipes,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 18, vertical: 12),
-                    decoration: BoxDecoration(
-                      color:        AppTheme.kBottleGreen,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    // Row drops `const` because its three children read
-                    // AppTheme.kAlabaster — same static-const-alias chain
-                    // that breaks Dart's const-expression resolution. The
-                    // inner Icons/Text/SizedBoxes are still effectively
-                    // const-eligible individually; only the parent Row
-                    // needs runtime allocation.
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.outdoor_grill_rounded,
-                            color: AppTheme.kAlabaster, size: 16),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Browse Braai Recipes',
-                          style: TextStyle(
-                            color:      AppTheme.kAlabaster,
-                            fontWeight: FontWeight.w800,
-                            fontSize:   13.5,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Icon(Icons.arrow_forward_rounded,
-                            color: AppTheme.kAlabaster, size: 15),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ───────────────────────────────────────────────────────────────────────
-  //   STATE B — POWER OFF (loadshedding active)
-  // ───────────────────────────────────────────────────────────────────────
-
-  Widget _buildPowerOff(LoadsheddingStatus s) {
-    final text   = Theme.of(context).textTheme;
-    final colors = Theme.of(context).colorScheme;
-    final accent = colors.secondary;  // mango via theme
-
-    return Container(
-      decoration: BoxDecoration(
-        color:        AppTheme.kCreamSand,
-        borderRadius: BorderRadius.circular(22),
-        // Soft warning border — mango at 60% alpha
-        border: Border.all(color: accent.withAlpha(150), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color:      accent.withAlpha(28),
-            blurRadius: 18,
-            spreadRadius: 1,
-          ),
-        ],
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
-        children: [
-          // Dotted waveform texture in mango at ~5% alpha
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _DottedWaveformPainter(
-                color:     accent.withAlpha(28),
-                spacing:   18,
-                amplitude: 14,
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 18, 18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    _LsStatusPill(
-                      color: accent,
-                      icon:  Icons.flash_off_rounded,
-                      label: s.todaySlots.isNotEmpty
-                          ? '${s.stageLabel.toUpperCase()} · ${s.todaySlots.first}'
-                          : s.stageLabel.toUpperCase(),
-                    ),
-                    const Spacer(),
-                    GestureDetector(
-                      onTap: _refresh,
-                      child: Icon(
-                        Icons.refresh_rounded,
-                        size:  18,
-                        color: colors.onSurfaceVariant.withAlpha(160),
-                      ),
-                    ),
-                  ],
-                ),
-                // Extra slots ribbon when multiple windows hit today
-                if (s.todaySlots.length > 1) ...[
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    children: s.todaySlots.skip(1).map((slot) => Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color:        accent.withAlpha(20),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: accent.withAlpha(60)),
-                      ),
-                      child: Text(
-                        'Also $slot',
-                        style: TextStyle(
-                          color:      accent,
-                          fontSize:   10,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    )).toList(),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                Text(
-                  'Quick stovetop meals ready in 20 min 🔋',
-                  style: text.headlineSmall?.copyWith(
-                    fontWeight:    FontWeight.w900,
-                    color:         AppTheme.kBottleGreen,
-                    letterSpacing: -0.3,
-                    height:        1.2,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'We\'ve filtered to gas-hob, braai-grid, and no-cook recipes '
-                  'only — every option here works without mains power.',
-                  style: text.bodySmall?.copyWith(
-                    color:  colors.onSurfaceVariant,
-                    height: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // Mango primary CTA — picked up from theme automatically
-                ElevatedButton.icon(
-                  onPressed: widget.onSeeQuickMeals,
-                  icon:  const Icon(Icons.local_fire_department_rounded,
-                      size: 16),
-                  label: const Text('Show Gas-Hob Meals'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 18, vertical: 12),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// =============================================================================
-// _LsStatusPill — small rounded pill used by both Loadshedding states
-// =============================================================================
-
-class _LsStatusPill extends StatelessWidget {
-  const _LsStatusPill({
-    required this.color,
-    required this.label,
-    this.icon,
-  });
-
-  final Color    color;
-  final String   label;
-  final IconData? icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color:        color.withAlpha(28),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withAlpha(80)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, color: color, size: 12),
-            const SizedBox(width: 4),
-          ],
-          Text(
-            label,
-            style: TextStyle(
-              color:         color,
-              fontSize:      10.5,
-              fontWeight:    FontWeight.w800,
-              letterSpacing: 0.4,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// =============================================================================
-// _DottedWaveformPainter — subtle power-waveform texture for the card backdrop
-// =============================================================================
-//
-// Draws evenly-spaced dots along a sine path that spans the card width.
-// Two rows of dots are painted (one ~25% from top, one ~65% from top) so the
-// texture reads across the whole surface without being uniform. Color +
-// alpha is supplied by the caller — typical use is 5–10% alpha of the
-// card's accent color, just enough to register as "intentional pattern"
-// against the cream surface.
-
-class _DottedWaveformPainter extends CustomPainter {
-  const _DottedWaveformPainter({
-    required this.color,
-    this.spacing   = 18.0,
-    this.amplitude = 12.0,
-  });
-
-  final Color  color;
-  final double spacing;   // horizontal distance between dots
-  final double amplitude; // vertical wave depth
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.fill;
-
-    // Two-row pattern for a richer texture.
-    final rows = [size.height * 0.30, size.height * 0.70];
-
-    for (var rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-      final centerY = rows[rowIdx];
-      // Stagger the second row's phase by half a wavelength so the rows
-      // interlock rather than mirror each other.
-      final phase = rowIdx == 0 ? 0.0 : math.pi;
-
-      double x = 0;
-      while (x < size.width) {
-        // Sine displacement — 1 full wave per ~6 dots
-        final y = centerY + amplitude *
-            math.sin((x / size.width) * math.pi * 6 + phase);
-        canvas.drawCircle(Offset(x, y), 1.6, paint);
-        x += spacing;
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _DottedWaveformPainter old) =>
-      old.color     != color ||
-      old.spacing   != spacing ||
-      old.amplitude != amplitude;
-}
 
 // =============================================================================
 // _DailyTipCard — 30 SA loadshedding-friendly recipes, cycles every 3 hours
@@ -5871,6 +5455,255 @@ class _CookbookSheet extends StatelessWidget {
           SizedBox(height: bottom + 8),
         ],
       ),
+    );
+  }
+}
+
+// =============================================================================
+// _RecipeNameGeneratorCard — type a recipe name → AI generates the whole thing
+// =============================================================================
+//
+// Lives on the home idle view between the Link Scanner hero and the
+// quick-nav grid. Hands the typed name to ScraperService.generateRecipeFromName
+// via the parent screen so the result threads into the same review/save
+// flow URL-scraped recipes use.
+
+class _RecipeNameGeneratorCard extends StatefulWidget {
+  const _RecipeNameGeneratorCard({required this.onGenerate});
+
+  final Future<void> Function(String name) onGenerate;
+
+  @override
+  State<_RecipeNameGeneratorCard> createState() =>
+      _RecipeNameGeneratorCardState();
+}
+
+class _RecipeNameGeneratorCardState extends State<_RecipeNameGeneratorCard> {
+  final _ctrl    = TextEditingController();
+  bool _running  = false;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _go() async {
+    final name = _ctrl.text.trim();
+    if (name.isEmpty || _running) return;
+    setState(() => _running = true);
+    try {
+      await widget.onGenerate(name);
+      if (mounted) _ctrl.clear();
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 16, 16, 16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end:   Alignment.bottomRight,
+          colors: [Color(0xFF0C351E), Color(0xFF205B4A)],
+        ),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x33000000),
+              blurRadius: 14,
+              offset: Offset(0, 6)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 48, height: 48,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color:        const Color(0xFFE59B27),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Icon(Icons.auto_awesome_rounded,
+                    color: Colors.white, size: 24),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'GENERATE ANY RECIPE',
+                      style: tt.labelSmall?.copyWith(
+                        color:         const Color(0xFFFFD7A8),
+                        letterSpacing: 1.4,
+                        fontWeight:    FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Cook anything',
+                      style: tt.headlineSmall?.copyWith(
+                        color:      Colors.white,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Type a dish, get a full SA recipe.',
+                      style: tt.bodySmall?.copyWith(
+                        color: const Color(0xFFA8D2BB),
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctrl,
+                  enabled:    !_running,
+                  textInputAction: TextInputAction.go,
+                  onSubmitted: (_) => _go(),
+                  textCapitalization: TextCapitalization.sentences,
+                  style: const TextStyle(color: Color(0xFF0C351E)),
+                  decoration: InputDecoration(
+                    hintText:  'e.g. Chicken curry, Bobotie, Tomato bredie…',
+                    hintStyle: const TextStyle(color: Color(0xFF8FA89B)),
+                    filled:    true,
+                    fillColor: Colors.white,
+                    contentPadding:
+                        const EdgeInsets.fromLTRB(14, 12, 12, 12),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide:   BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _running ? null : _go,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFE59B27),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                child: _running
+                    ? const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.2, color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.bolt_rounded,
+                        size: 18, color: Colors.white),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// _VeganModePill — global vegan-mode switch on the home hero
+// =============================================================================
+
+class _VeganModePill extends StatelessWidget {
+  const _VeganModePill();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return ValueListenableBuilder<bool>(
+      valueListenable: VeganMode.enabled,
+      builder: (_, on, __) {
+        return GestureDetector(
+          onTap: () => VeganMode.set(!on),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: on
+                  ? AppTheme.kBottleGreen.withAlpha(28)
+                  : AppTheme.kCreamSand,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: on
+                    ? AppTheme.kBottleGreen.withAlpha(120)
+                    : colors.outlineVariant.withAlpha(120),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 32, height: 32,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: on
+                        ? AppTheme.kBottleGreen
+                        : colors.outlineVariant.withAlpha(60),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Text('🌱', style: TextStyle(fontSize: 18)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        on ? 'Vegan mode is ON' : 'Vegan mode',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize:   13.5,
+                          color:      on
+                              ? AppTheme.kBottleGreen
+                              : colors.onSurface,
+                        ),
+                      ),
+                      Text(
+                        on
+                            ? 'Recipes auto-swap to vegan alternatives.'
+                            : 'Tap to swap meat / dairy / eggs for vegan options.',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color:    colors.onSurfaceVariant,
+                          height:   1.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch.adaptive(
+                  value:    on,
+                  activeThumbColor: AppTheme.kBottleGreen,
+                  onChanged: (v) => VeganMode.set(v),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

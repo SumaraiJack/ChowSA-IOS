@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'pantry_screen.dart' show shoppingListsUpdateNotifier;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -206,13 +207,180 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
   }
 
   void _toggleItem(ShoppingList list, ShoppingItem item) {
+    final willBeChecked = !item.checked;
     setState(() {
       final idx = list.items.indexWhere((i) => i.id == item.id);
       if (idx != -1) {
-        list.items[idx] = item.copyWith(checked: !item.checked);
+        list.items[idx] = item.copyWith(checked: willBeChecked);
       }
     });
     _save();
+    // WS2: when an item gets ticked off, surface the optional "paid R__"
+    // capture. It's a tiny bottom sheet — Skip leaves the row in price_points
+    // untouched, so the core check-off flow is never blocked.
+    if (willBeChecked && mounted) {
+      _promptPaidPrice(item);
+    }
+  }
+
+  // ── Budget (WS2) ────────────────────────────────────────────────────────────
+
+  void _setBudget(ShoppingList list, double? budget) {
+    setState(() => list.budgetZar = budget);
+    _save();
+  }
+
+  // ── Paid R__ capture (WS2) ──────────────────────────────────────────────────
+  //
+  // Optional crowd-price log fired the moment a user ticks an item. Skippable,
+  // dismissible, never blocks the check-off. Inserts into `price_points` with
+  // the user's id (RLS-enforced). A failed insert is silently swallowed —
+  // crowd data is a nice-to-have, not a blocker for the shopping flow.
+
+  Future<void> _promptPaidPrice(ShoppingItem item) async {
+    // Skip the prompt when there's no auth session — RLS would reject the
+    // insert anyway and there's no point pestering the user.
+    if (Supabase.instance.client.auth.currentSession == null) return;
+
+    final priceCtrl = TextEditingController();
+    final storeCtrl = TextEditingController();
+
+    final captured = await showModalBottomSheet<bool>(
+      context:            context,
+      isScrollControlled: true,
+      backgroundColor:    Colors.transparent,
+      builder: (sheetCtx) {
+        final tt = Theme.of(sheetCtx).textTheme;
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(sheetCtx).viewInsets.bottom,
+          ),
+          child: Container(
+            decoration: const BoxDecoration(
+              color: Color(0xFFF8F6F1),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+            ),
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36, height: 4,
+                    decoration: BoxDecoration(
+                      color:        const Color(0xFFD8D3C8),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  'Paid for "${item.name}"?',
+                  style: tt.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color:      _kForest,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Optional — helps Aunty Chow learn real SA prices.',
+                  style: tt.bodySmall?.copyWith(color: _kMuted),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: priceCtrl,
+                  autofocus:  true,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    prefixText: 'R ',
+                    hintText:   'e.g. 18.50',
+                    filled:     true,
+                    fillColor:  Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.all(Radius.circular(12)),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: storeCtrl,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    hintText:  'Store (optional) — Checkers, PnP…',
+                    filled:    true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.all(Radius.circular(12)),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(sheetCtx, false),
+                        child: const Text('Skip'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _kOrange,
+                        ),
+                        onPressed: () => Navigator.pop(sheetCtx, true),
+                        child: const Text('Save'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (captured != true) {
+      priceCtrl.dispose();
+      storeCtrl.dispose();
+      return;
+    }
+
+    final price = double.tryParse(priceCtrl.text.trim().replaceAll(',', '.'));
+    final store = storeCtrl.text.trim();
+    priceCtrl.dispose();
+    storeCtrl.dispose();
+    if (price == null || price <= 0) return;
+
+    final normalized = item.name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (normalized.isEmpty) return;
+
+    try {
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) return;
+      await Supabase.instance.client.from('price_points').insert({
+        'raw_name':        item.name,
+        'normalized_name': normalized,
+        'price_zar':       double.parse(price.toStringAsFixed(2)),
+        if (store.isNotEmpty) 'store': store,
+        'user_id':         userId,
+      });
+      // TODO(WS2): once enough rows accumulate, an aggregate RPC will surface
+      // the median for this normalized_name into price_cache as source='crowd'
+      // so estimates self-improve. Tracked under WS6 specials follow-on.
+    } catch (_) {
+      // Best-effort — crowd capture must never break the shopping flow.
+    }
   }
 
   void _addItemToList(ShoppingList list, String name) {
@@ -282,6 +450,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
           onAdd:        (name) => _addItemToList(_activeList!, name),
           onDeleteItem: (item) => _deleteItem(_activeList!, item),
           onClearDone:  () => _clearChecked(_activeList!),
+          onSetBudget:  (v) => _setBudget(_activeList!, v),
           onShareToUser: widget.onShareToUser != null
               ? (handle) async => widget.onShareToUser!(handle, _activeList!)
               : null,
@@ -637,6 +806,7 @@ class _ListDetailView extends StatefulWidget {
     required this.onAdd,
     required this.onDeleteItem,
     required this.onClearDone,
+    required this.onSetBudget,
     this.onShareToUser,
   });
 
@@ -648,6 +818,9 @@ class _ListDetailView extends StatefulWidget {
   final ValueChanged<String>       onAdd;
   final ValueChanged<ShoppingItem> onDeleteItem;
   final VoidCallback               onClearDone;
+  /// WS2: writes the user-entered budget (or null to clear) back to the
+  /// parent state which owns shared_preferences persistence.
+  final ValueChanged<double?>      onSetBudget;
   /// Null when Pro sharing is unavailable (no auth / free tier).
   final Future<void> Function(String handle)? onShareToUser;
 
@@ -671,6 +844,12 @@ class _ListDetailViewState extends State<_ListDetailView> {
   /// total itself is computed on the fly via [_currentGrandTotalZar] so
   /// it updates instantly when an item flips its `checked` state.
   bool                _hasEstimate      = false;
+
+  /// WS6: active retailer specials keyed by normalised item name. Loaded
+  /// once on detail-view open from the `specials` table — best-effort,
+  /// failure is silent and the badge simply doesn't render. The cache is
+  /// refreshed weekly server-side, so a stale snapshot per open is fine.
+  Map<String, SpecialMatch> _specials = const {};
 
   /// Estimate-accuracy hint banner visibility — once-per-session only.
   /// Backed by the top-level in-memory flag [_estimateHintDismissedThisSession]
@@ -698,6 +877,21 @@ class _ListDetailViewState extends State<_ListDetailView> {
   @override
   void initState() {
     super.initState();
+    // Kick off the specials fetch on detail-view open. Off the critical
+    // path — first paint never waits for it.
+    unawaited(_refreshSpecials());
+  }
+
+  Future<void> _refreshSpecials() async {
+    final svc = PriceEstimateService.instance;
+    final names = widget.list.items
+        .map((i) => svc.normalizeForSpecials(i.name))
+        .where((n) => n.isNotEmpty)
+        .toSet();
+    if (names.isEmpty) return;
+    final hits = await svc.fetchActiveSpecials(names);
+    if (!mounted) return;
+    setState(() => _specials = hits);
   }
 
   void _dismissEstimateHint() {
@@ -815,6 +1009,69 @@ class _ListDetailViewState extends State<_ListDetailView> {
     );
   }
 
+  /// WS2: settable basket budget. Submitting an empty field clears the
+  /// budget (back to "no target"). The numeric parser accepts both "120"
+  /// and "120.50"; we trim a leading "R" so paste-from-clipboard works.
+  Future<void> _promptBudget() async {
+    final current = widget.list.budgetZar;
+    final ctrl = TextEditingController(
+      text: current == null ? '' : current.toStringAsFixed(2),
+    );
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        scrollable:   true,
+        title: const Text('Basket budget'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('What can you spend on this list?'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus:  true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                prefixText: 'R ',
+                hintText:   'e.g. 500.00',
+                border:     OutlineInputBorder(),
+              ),
+              onSubmitted: (v) => Navigator.pop(ctx, v),
+            ),
+          ],
+        ),
+        actions: [
+          if (current != null)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, ''),
+              child: const Text('Clear'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (result == null) return;
+    final cleaned = result.replaceAll('R', '').trim().replaceAll(',', '.');
+    if (cleaned.isEmpty) {
+      widget.onSetBudget(null);
+      return;
+    }
+    final value = double.tryParse(cleaned);
+    if (value != null && value > 0) {
+      widget.onSetBudget(value);
+    }
+  }
+
   void _promptRename() async {
     final ctrl = TextEditingController(text: widget.list.name);
     final result = await showDialog<String>(
@@ -879,7 +1136,12 @@ class _ListDetailViewState extends State<_ListDetailView> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Back + actions row
+                  // Back + actions row.
+                  // Share / Rename / Delete moved into a 3-dot overflow
+                  // menu so the row fits inside the device width once the
+                  // WS2 budget icon + Estimate basket pill share the bar.
+                  // Compact IconButton constraints (no default 48dp hit
+                  // box) keep the remaining icons + pill on one row.
                   Row(
                     children: [
                       IconButton(
@@ -889,33 +1151,74 @@ class _ListDetailViewState extends State<_ListDetailView> {
                         constraints: const BoxConstraints(),
                       ),
                       const Spacer(),
+                      // ── Budget target (WS2) ───────────────────────────
+                      // Tap to set / edit / clear the basket budget.
                       IconButton(
-                        icon:      const Icon(Icons.ios_share_rounded,
-                            color: Colors.white, size: 20),
-                        onPressed: _showShareSheet,
-                        tooltip:   'Share list',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.edit_outlined, color: Colors.white, size: 20),
-                        onPressed: _promptRename,
-                        tooltip: 'Rename',
+                        icon: Icon(
+                          widget.list.budgetZar == null
+                              ? Icons.savings_outlined
+                              : Icons.savings_rounded,
+                          color: Colors.white,
+                          size:  20,
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        constraints: const BoxConstraints(),
+                        onPressed: _promptBudget,
+                        tooltip:   widget.list.budgetZar == null
+                            ? 'Set budget'
+                            : 'Budget: ${_formatZar(widget.list.budgetZar!)}',
                       ),
                       if (checked > 0)
                         IconButton(
                           icon: const Icon(Icons.cleaning_services_outlined, color: Colors.white, size: 20),
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          constraints: const BoxConstraints(),
                           onPressed: widget.onClearDone,
                           tooltip: 'Clear checked',
                         ),
-                      IconButton(
-                        icon: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 20),
-                        onPressed: _confirmDelete,
-                        tooltip: 'Delete list',
+                      // 3-dot overflow — Share / Rename / Delete
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_vert_rounded,
+                            color: Colors.white, size: 20),
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        tooltip: 'List actions',
+                        onSelected: (value) {
+                          switch (value) {
+                            case 'share':  _showShareSheet();  break;
+                            case 'rename': _promptRename();    break;
+                            case 'delete': _confirmDelete();   break;
+                          }
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(
+                            value: 'share',
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.ios_share_rounded),
+                              title: Text('Share list'),
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: 'rename',
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.edit_outlined),
+                              title: Text('Rename'),
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: 'delete',
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.delete_outline_rounded,
+                                  color: Colors.red),
+                              title: Text('Delete list',
+                                  style: TextStyle(color: Colors.red)),
+                            ),
+                          ),
+                        ],
                       ),
                       // ── R Estimate — AI-powered price baseline ─────────
-                      // Pinned to the top-right of the active list view per
-                      // spec. Disabled while a previous estimate is still
-                      // running so a double-tap can't fire two concurrent
-                      // Gemini requests.
                       const SizedBox(width: 4),
                       Tooltip(
                         message: 'Estimate basket total (AI)',
@@ -953,7 +1256,7 @@ class _ListDetailViewState extends State<_ListDetailView> {
                                   ),
                                 const SizedBox(width: 6),
                                 const Text(
-                                  'Estimate',
+                                  'Estimate basket',
                                   style: TextStyle(
                                     color:      Colors.white,
                                     fontSize:   12,
@@ -1176,6 +1479,9 @@ class _ListDetailViewState extends State<_ListDetailView> {
                               onDelete: () => widget.onDeleteItem(grouped[cat]![i]),
                               estimateZar:
                                   _itemEstimates?[_formatItemKey(grouped[cat]![i])],
+                              special: _specials[
+                                  PriceEstimateService.instance
+                                      .normalizeForSpecials(grouped[cat]![i].name)],
                             ),
                             if (i < grouped[cat]!.length - 1)
                               const Divider(height: 1, indent: 52, endIndent: 16),
@@ -1208,6 +1514,12 @@ class _ListDetailViewState extends State<_ListDetailView> {
                               onDelete: () => widget.onDeleteItem(items.where((x) => x.checked).toList()[i]),
                               estimateZar: _itemEstimates?[_formatItemKey(
                                   items.where((x) => x.checked).toList()[i])],
+                              // Checked rows hide the on-special badge inside the
+                              // tile, but still pass it through for completeness.
+                              special: _specials[
+                                  PriceEstimateService.instance
+                                      .normalizeForSpecials(
+                                          items.where((x) => x.checked).toList()[i].name)],
                             ),
                             if (i < items.where((x) => x.checked).length - 1)
                               const Divider(height: 1, indent: 52, endIndent: 16),
@@ -1230,8 +1542,13 @@ class _ListDetailViewState extends State<_ListDetailView> {
                     // Live total — recomputed every build, so flipping
                     // an item's checked state instantly drops it from
                     // the basket sum (the "Done" pile no longer counts).
-                    total:    _formatZar(_currentGrandTotalZar),
-                    onClear:  () => setState(() {
+                    total:     _formatZar(_currentGrandTotalZar),
+                    totalZar:  _currentGrandTotalZar,
+                    // WS2: optional budget rendered as `Rxx left` /
+                    // `Rxx over` next to the total. Null = no badge.
+                    budgetZar: widget.list.budgetZar,
+                    formatZar: _formatZar,
+                    onClear:   () => setState(() {
                       _itemEstimates = null;
                       _hasEstimate   = false;
                     }),
@@ -1251,12 +1568,30 @@ class _ListDetailViewState extends State<_ListDetailView> {
 /// close (✕) button discards the estimate so the user can run another
 /// pass after editing the list.
 class _BasketTotalCard extends StatelessWidget {
-  const _BasketTotalCard({required this.total, required this.onClear});
-  final String        total;
-  final VoidCallback  onClear;
+  const _BasketTotalCard({
+    required this.total,
+    required this.totalZar,
+    required this.onClear,
+    this.budgetZar,
+    this.formatZar,
+  });
+  final String                 total;
+  final double                 totalZar;
+  final VoidCallback           onClear;
+  /// Optional user-set basket budget. When non-null the card renders a
+  /// `Rxx left` (green) or `Rxx over` (red) chip beside the total.
+  final double?                budgetZar;
+  /// Caller-supplied ZAR formatter so the chip matches the rest of the
+  /// screen's "R12.34" convention without a duplicate static helper.
+  final String Function(double)? formatZar;
 
   @override
   Widget build(BuildContext context) {
+    final budget = budgetZar;
+    final delta  = budget == null ? null : budget - totalZar;
+    final overBudget = delta != null && delta < 0;
+    final fmt = formatZar ?? (v) => 'R${v.toStringAsFixed(2)}';
+
     return Material(
       elevation:    8,
       borderRadius: BorderRadius.circular(20),
@@ -1287,9 +1622,11 @@ class _BasketTotalCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'ESTIMATED BASKET TOTAL',
-                    style: TextStyle(
+                  Text(
+                    budget == null
+                        ? 'ESTIMATED BASKET TOTAL'
+                        : 'BASKET · BUDGET ${fmt(budget)}',
+                    style: const TextStyle(
                       color:         Color(0xFF9EC4AC),
                       fontSize:      10.5,
                       fontWeight:    FontWeight.w900,
@@ -1297,14 +1634,45 @@ class _BasketTotalCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    total,
-                    style: const TextStyle(
-                      color:      Colors.white,
-                      fontWeight: FontWeight.w900,
-                      fontSize:   22,
-                      letterSpacing: -0.3,
-                    ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          total,
+                          style: const TextStyle(
+                            color:      Colors.white,
+                            fontWeight: FontWeight.w900,
+                            fontSize:   22,
+                            letterSpacing: -0.3,
+                          ),
+                        ),
+                      ),
+                      if (delta != null) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: overBudget
+                                ? const Color(0xFFE15A4C)
+                                : const Color(0xFF6FCF97),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            overBudget
+                                ? '${fmt(-delta)} over'
+                                : '${fmt(delta)} left',
+                            style: const TextStyle(
+                              color:      Colors.white,
+                              fontWeight: FontWeight.w900,
+                              fontSize:   12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
@@ -1367,12 +1735,88 @@ class _CategoryHeader extends StatelessWidget {
 // _ShoppingItemTile
 // =============================================================================
 
+/// Path C — explains why the estimate sometimes looks high for a small
+/// recipe portion. Returns null when no clarification is needed (the
+/// estimate roughly matches the purchased pack-size already).
+///
+/// Two cases produce a hint:
+///   1. Long-life pantry staples (oils, spices, vinegars, baking aids,
+///      sauces) — the user buys a whole bottle/jar that lasts many meals.
+///   2. Small-volume liquids — "30 ml" of oil etc. priced at full bottle.
+String? _priceContextHint(ShoppingItem item) {
+  final name = item.name.toLowerCase();
+  const stapleHints = <String, String>{
+    'oil':          'Pantry staple · lasts many meals',
+    'olive oil':    'Pantry staple · lasts many meals',
+    'sunflower oil':'Pantry staple · lasts many meals',
+    'coconut oil':  'Pantry staple · lasts many meals',
+    'vinegar':      'Pantry staple · lasts many meals',
+    'soy sauce':    'Pantry staple · lasts many meals',
+    'sugar':        'Pantry staple · lasts many meals',
+    'flour':        'Pantry staple · lasts many meals',
+    'salt':         'Pantry staple · lasts many meals',
+    'baking powder':'Pantry staple · lasts many meals',
+    'baking soda':  'Pantry staple · lasts many meals',
+    'maizena':      'Pantry staple · lasts many meals',
+    'cornflour':    'Pantry staple · lasts many meals',
+    'vanilla':      'Pantry staple · lasts many meals',
+    'cocoa':        'Pantry staple · lasts many meals',
+    'curry powder': 'Pantry staple · lasts many meals',
+    'masala':       'Pantry staple · lasts many meals',
+    'paprika':      'Pantry staple · lasts many meals',
+    'cumin':        'Pantry staple · lasts many meals',
+    'turmeric':     'Pantry staple · lasts many meals',
+    'cinnamon':     'Pantry staple · lasts many meals',
+    'ginger powder':'Pantry staple · lasts many meals',
+    'garlic powder':'Pantry staple · lasts many meals',
+    'aromat':       'Pantry staple · lasts many meals',
+    'braai spice':  'Pantry staple · lasts many meals',
+    'chicken spice':'Pantry staple · lasts many meals',
+    'stock':        'Pantry staple · lasts many meals',
+    'knorrox':      'Pantry staple · lasts many meals',
+    'royco':        'Pantry staple · lasts many meals',
+    'jam':          'Pantry staple · lasts many meals',
+    'honey':        'Pantry staple · lasts many meals',
+    'marmite':      'Pantry staple · lasts many meals',
+    'bovril':       'Pantry staple · lasts many meals',
+    'peanut butter':'Pantry staple · lasts many meals',
+    'tomato sauce': 'Pantry staple · lasts many meals',
+    'chutney':      'Pantry staple · lasts many meals',
+    'syrup':        'Pantry staple · lasts many meals',
+    'mayo':         'Pantry staple · lasts many meals',
+    'mayonnaise':   'Pantry staple · lasts many meals',
+    'mustard':      'Pantry staple · lasts many meals',
+  };
+
+  for (final entry in stapleHints.entries) {
+    if (name.contains(entry.key)) return entry.value;
+  }
+
+  // Small-volume liquid catch-all: 30 ml oil etc. priced at bottle rate.
+  final qty  = item.quantity?.trim() ?? '';
+  final unit = item.unit?.toLowerCase().trim() ?? '';
+  final numeric = double.tryParse(qty.replaceAll(',', '.'));
+  if (numeric != null && numeric > 0) {
+    if (unit == 'ml' && numeric <= 250) {
+      return 'Sold by the bottle · price is for the full pack';
+    }
+    if (unit == 'g' && numeric <= 100) {
+      return 'Sold by the pack · price is for the full unit';
+    }
+    if (unit == 'tsp' || unit == 'tbsp') {
+      return 'Sold in jars/bottles · price is for the full unit';
+    }
+  }
+  return null;
+}
+
 class _ShoppingItemTile extends StatelessWidget {
   const _ShoppingItemTile({
     required this.item,
     required this.onToggle,
     required this.onDelete,
     this.estimateZar,
+    this.special,
   });
 
   final ShoppingItem item;
@@ -1382,6 +1826,9 @@ class _ShoppingItemTile extends StatelessWidget {
   /// when the user hasn't tapped "R Estimate" yet, OR when the AI
   /// couldn't price this specific line item.
   final double?      estimateZar;
+  /// WS6: active retailer special for this item, or null when nothing
+  /// matched the normalised name in the `specials` overlay table.
+  final SpecialMatch? special;
 
   @override
   Widget build(BuildContext context) {
@@ -1454,20 +1901,73 @@ class _ShoppingItemTile extends StatelessWidget {
                         ),
                       ),
                     // ── AI price estimate (per-row) ──────────────────
-                    // Rendered directly under the title per spec. A
-                    // zero price means the AI flagged the item as
-                    // unrecognisable / unpriced — surface that as an
-                    // explicit "— couldn't price" so the user knows
-                    // why the row didn't roll into the basket total.
+                    // WS3: rendered as a ~range instead of a single
+                    // figure so the number reads as an estimate, not a
+                    // promise. We bracket the central estimate by ±8%
+                    // and round to the nearest rand — tight enough that
+                    // the basket-total math is still recognisable, loose
+                    // enough that users don't feel cheated by ±R2.
                     if (estimateZar != null && estimateZar! > 0)
                       Padding(
                         padding: const EdgeInsets.only(top: 2),
                         child: Text(
-                          'Est. Avg: R${estimateZar!.toStringAsFixed(2)}',
+                          '~R${(estimateZar! * 0.92).round()}'
+                          '–R${(estimateZar! * 1.08).round()}',
                           style: tt.bodySmall?.copyWith(
                             fontWeight: FontWeight.w700,
                             color:     _kOrange,
                             fontSize:  11.5,
+                          ),
+                        ),
+                      ),
+                    // ── Price-context hint (Path C) ──────────────────
+                    // Explains why a 30ml line item shows R55: the till
+                    // charges for the full bottle / pack, not the pro-
+                    // rated recipe portion. Lifts the user's confusion
+                    // without overstating the basket cost. Pantry staples
+                    // get a separate hint flagging "you probably already
+                    // have this — keep an eye on the basket total".
+                    if (estimateZar != null && estimateZar! > 0)
+                      Builder(
+                        builder: (_) {
+                          final hint = _priceContextHint(item);
+                          if (hint == null) return const SizedBox.shrink();
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 1),
+                            child: Text(
+                              hint,
+                              style: tt.bodySmall?.copyWith(
+                                color:    _kMuted,
+                                fontSize: 10.5,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    // ── WS6: on-special badge ────────────────────────
+                    // Renders only when the weekly specials cron has a
+                    // live match for this item's normalised name. Tiny
+                    // emoji + store + price — never blocks the row.
+                    if (special != null && !item.checked)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color:        const Color(0xFFFFE9D4),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: _kOrange.withAlpha(70)),
+                          ),
+                          child: Text(
+                            '🔥 on special at ${special!.store} · '
+                            'R${special!.priceZar.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              color:      _kForest,
+                              fontWeight: FontWeight.w800,
+                              fontSize:   11,
+                            ),
                           ),
                         ),
                       ),

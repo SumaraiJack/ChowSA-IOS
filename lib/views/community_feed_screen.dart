@@ -2174,6 +2174,9 @@ class _LoadsheddingMicroBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Hidden per user request — see pantry_screen._LoadsheddingBadge.
+    return const SizedBox.shrink();
+    // ignore: dead_code
     final bg    = friendly ? const Color(0xFF0C351E) : const Color(0xFF2C2C2E);
     final fg    = friendly ? const Color(0xFF6FCF97) : const Color(0xFF98989F);
     final icon  = friendly

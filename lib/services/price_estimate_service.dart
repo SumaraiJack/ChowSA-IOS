@@ -14,10 +14,12 @@
 // estimator when nothing is configured so the UI is always testable
 // end-to-end.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/env.config.dart';
 
@@ -45,6 +47,13 @@ class PriceEstimateResult {
   final double              grandTotal;
 }
 
+/// WS6: one active special hit for a normalised item — store + price.
+class SpecialMatch {
+  const SpecialMatch({required this.store, required this.priceZar});
+  final String store;
+  final double priceZar;
+}
+
 /// Thrown when the AI round-trip fails (network, quota, bad JSON, etc.).
 /// The UI maps this to a friendly "Could not fetch price estimates"
 /// SnackBar without exposing the underlying error string.
@@ -58,6 +67,147 @@ class PriceEstimateException implements Exception {
 class PriceEstimateService {
   PriceEstimateService._();
   static final instance = PriceEstimateService._();
+
+  // Remote baselines loaded once from Supabase `price_baselines` on app start.
+  // Sorted by specificity desc so multi-word matches win first, mirroring the
+  // hardcoded map's iteration order. Null until init() succeeds; on failure
+  // (offline, RLS, network) it stays null and the static [_baselines] map
+  // remains the source of truth — the offline-resilience contract.
+  List<MapEntry<String, double>>? _remoteBaselines;
+
+  /// Hydrates the editable baselines from Supabase. Best-effort; safe to call
+  /// before auth. A failure leaves the hardcoded fallback intact.
+  Future<void> init() async {
+    try {
+      final rows = await Supabase.instance.client
+          .from('price_baselines')
+          .select('keyword, avg_price_zar, specificity')
+          .order('specificity', ascending: false)
+          .order('keyword', ascending: true);
+      final list = <MapEntry<String, double>>[];
+      for (final r in (rows as List)) {
+        final m = r as Map<String, dynamic>;
+        final k = (m['keyword'] as String?)?.toLowerCase();
+        final p = (m['avg_price_zar'] as num?)?.toDouble();
+        if (k == null || k.isEmpty || p == null) continue;
+        list.add(MapEntry(k, p));
+      }
+      if (list.isNotEmpty) {
+        _remoteBaselines = list;
+        debugPrint('PriceEstimateService: loaded ${list.length} remote baselines.');
+      }
+    } catch (e) {
+      debugPrint('PriceEstimateService: baseline load failed ($e); using hardcoded fallback.');
+    }
+  }
+
+  // ── Specials overlay (WS6) ────────────────────────────────────────────
+  //
+  // Batch-fetches every active special whose normalized_name matches one
+  // of the user's list items. The `specials` table is refreshed weekly by
+  // a Supabase Edge Function cron (server-side AI extract from retailer
+  // catalogues) — the app only ever reads, never writes. Failure returns
+  // an empty map so a flaky network simply hides the badge.
+
+  /// Active special for a normalised item, or null when the item is not on
+  /// special today.
+  Future<Map<String, SpecialMatch>> fetchActiveSpecials(
+      Iterable<String> normalized) async {
+    final keys = normalized.toSet().toList();
+    if (keys.isEmpty) return const {};
+    try {
+      final today = DateTime.now().toUtc().toIso8601String().substring(0, 10);
+      final rows = await Supabase.instance.client
+          .from('specials')
+          .select('normalized_name, store, price_zar, valid_to')
+          .inFilter('normalized_name', keys)
+          .gte('valid_to', today);
+      final out = <String, SpecialMatch>{};
+      for (final r in (rows as List)) {
+        final m = r as Map<String, dynamic>;
+        final k = m['normalized_name'] as String?;
+        final s = m['store']           as String?;
+        final p = (m['price_zar'] as num?)?.toDouble();
+        if (k == null || s == null || p == null) continue;
+        // Keep the cheapest live special when the same normalised item
+        // appears at multiple retailers.
+        final existing = out[k];
+        if (existing == null || p < existing.priceZar) {
+          out[k] = SpecialMatch(store: s, priceZar: p);
+        }
+      }
+      return out;
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// Public wrapper so callers don't have to know the normalisation rule.
+  String normalizeForSpecials(String raw) => _normalize(raw);
+
+  // ── Cache plumbing (Supabase price_cache) ─────────────────────────────
+  //
+  // Normalisation is intentionally simple: lower-case, collapse whitespace,
+  // strip punctuation. This keeps "1L Milk", "1l milk ", and "1l, milk"
+  // sharing one cache row without dragging in a stemming library. Pack-size
+  // and bulk pricing are absorbed by the local engine downstream — the cache
+  // key is the *user-typed* shape, not the parsed shape.
+  String _normalize(String raw) {
+    final lower = raw.toLowerCase().trim();
+    final cleaned = lower
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return cleaned;
+  }
+
+  Future<Map<String, double>> _readCache(Iterable<String> normalized) async {
+    final keys = normalized.toSet().toList();
+    if (keys.isEmpty) return const {};
+    try {
+      final rows = await Supabase.instance.client
+          .from('price_cache')
+          .select('normalized_name, avg_price_zar')
+          .inFilter('normalized_name', keys);
+      final out = <String, double>{};
+      for (final r in (rows as List)) {
+        final m = r as Map<String, dynamic>;
+        final k = m['normalized_name'] as String?;
+        final p = (m['avg_price_zar'] as num?)?.toDouble();
+        if (k != null && p != null) out[k] = p;
+      }
+      return out;
+    } catch (e) {
+      debugPrint('PriceEstimateService: cache read failed ($e); skipping.');
+      return const {};
+    }
+  }
+
+  Future<void> _writeCache(Map<String, double> normalizedPrices, String source) async {
+    if (normalizedPrices.isEmpty) return;
+    // Skip when there's no auth session — RLS would reject the insert anyway.
+    final session = Supabase.instance.client.auth.currentSession;
+    if (session == null) return;
+    final now = DateTime.now().toUtc().toIso8601String();
+    final payload = normalizedPrices.entries
+        .where((e) => e.key.isNotEmpty && e.value > 0)
+        .map((e) => {
+              'normalized_name': e.key,
+              'avg_price_zar':   double.parse(e.value.toStringAsFixed(2)),
+              'source':          source,
+              'updated_at':      now,
+            })
+        .toList(growable: false);
+    if (payload.isEmpty) return;
+    try {
+      await Supabase.instance.client
+          .from('price_cache')
+          .upsert(payload, onConflict: 'normalized_name');
+    } catch (e) {
+      // Cache writes are best-effort — a failure must never break estimate().
+      debugPrint('PriceEstimateService: cache write failed ($e); ignoring.');
+    }
+  }
 
   // gemini-2.5-flash-lite — same cheap, fast text model the rest of the
   // app uses for structured JSON tasks. The system instruction below
@@ -144,18 +294,51 @@ Rules:
       return const PriceEstimateResult(byOriginalName: {}, grandTotal: 0);
     }
 
+    // ── Cache lookup (WS1) ───────────────────────────────────────────
+    // Hit Supabase `price_cache` for every requested item; anything we
+    // already know skips both the AI round-trip and the local engine.
+    final normalizedByOriginal = <String, String>{
+      for (final o in cleaned) o: _normalize(o),
+    };
+    final cacheHits = await _readCache(normalizedByOriginal.values);
+
+    final byOriginal = <String, double>{};
+    final misses    = <String>[];
+    for (final o in cleaned) {
+      final n = normalizedByOriginal[o]!;
+      final hit = cacheHits[n];
+      if (hit != null && hit > 0) {
+        byOriginal[o] = hit;
+      } else {
+        misses.add(o);
+      }
+    }
+
+    // Everything was cached — short-circuit, zero AI calls.
+    if (misses.isEmpty) {
+      final total = byOriginal.values.fold<double>(0, (a, b) => a + b);
+      return PriceEstimateResult(byOriginalName: byOriginal, grandTotal: total);
+    }
+
     // ── Mock mode ────────────────────────────────────────────────────
     // No key configured — return synthetic estimates so dev builds and
     // UI screenshots can demo the full layout. Prices roughly track
     // SA shelf averages so the screen doesn't look ridiculous.
     if (_kPriceEstApiKey.isEmpty) {
-      return _mockEstimate(cleaned);
+      final mock = _mockEstimate(misses);
+      final merged = <String, double>{...byOriginal, ...mock.byOriginalName};
+      unawaited(_writeCache({
+        for (final e in mock.byOriginalName.entries)
+          if (e.value > 0) normalizedByOriginal[e.key]!: e.value,
+      }, 'baseline'));
+      final total = merged.values.where((v) => v > 0).fold<double>(0, (a, b) => a + b);
+      return PriceEstimateResult(byOriginalName: merged, grandTotal: total);
     }
 
     final prompt =
         'Estimate ZAR prices for these grocery list items as plain JSON. '
         'Copy each "original_name" exactly as written below:\n\n'
-        '${jsonEncode(cleaned)}';
+        '${jsonEncode(misses)}';
 
     late final GenerateContentResponse response;
     try {
@@ -170,7 +353,18 @@ Rules:
     if (text == null || text.isEmpty) {
       throw const PriceEstimateException('Empty AI response.');
     }
-    return _parse(text, cleaned);
+    final parsed = _parse(text, misses);
+
+    // Persist AI/local results for the misses to the shared cache, then
+    // merge with the cache-hit slice so the caller sees one combined map.
+    unawaited(_writeCache({
+      for (final e in parsed.byOriginalName.entries)
+        if (e.value > 0) normalizedByOriginal[e.key]!: e.value,
+    }, 'ai'));
+
+    final merged = <String, double>{...byOriginal, ...parsed.byOriginalName};
+    final total = merged.values.where((v) => v > 0).fold<double>(0, (a, b) => a + b);
+    return PriceEstimateResult(byOriginalName: merged, grandTotal: total);
   }
 
   // ── Parsing ────────────────────────────────────────────────────────
@@ -351,8 +545,19 @@ Rules:
   static const double _kMaxReasonable = 600.0;
 
   /// Pulls a base unit price from the keyword table.
+  ///
+  /// Prefers the Supabase-backed remote baselines (loaded once by [init])
+  /// so prices can be re-tuned without an APK release. Falls through to
+  /// the hardcoded [_baselines] map when remote is unavailable — the
+  /// offline-resilience contract.
   double _baselineFor(String raw) {
     final lower = raw.toLowerCase();
+    final remote = _remoteBaselines;
+    if (remote != null) {
+      for (final entry in remote) {
+        if (lower.contains(entry.key)) return entry.value;
+      }
+    }
     for (final entry in _baselines.entries) {
       if (lower.contains(entry.key)) return entry.value;
     }

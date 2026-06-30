@@ -5,6 +5,7 @@ import 'package:google_generative_ai/google_generative_ai.dart';
 import '../models/recipe.dart';
 import '../models/ingredient.dart';
 import '../config/env.config.dart';
+import '../state/vegan_mode.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API KEY — resolved at startup.
@@ -17,6 +18,9 @@ const _dartDefineKey = String.fromEnvironment('GEMINI_API_KEY', defaultValue: ''
 final String _apiKey  = kGeminiApiKey.isNotEmpty ? kGeminiApiKey : _dartDefineKey;
 
 class ScraperService {
+  ScraperService();
+  static final instance = ScraperService();
+
   // gemini-2.5-flash-lite for text tasks — 6x cheaper, same quality for
   // structured JSON extraction from recipe webpages and raw text.
   late final GenerativeModel _model = GenerativeModel(
@@ -58,14 +62,33 @@ class ScraperService {
     String pageText;
 
     if (isVideoSite) {
-      // For social/video sites send the URL + context to Gemini directly.
-      // Gemini 2.5-flash-lite has training data from these platforms and can
-      // often extract recipe content from the URL alone.
-      pageText = 'Social media / video URL: $trimmedUrl\n\n'
-          'Extract any recipe content associated with this URL. '
-          'If this is a video, extract ingredients and steps from the '
-          'title, description, or any pinned comments you know about. '
-          'If no recipe can be determined, return { "error": "No recipe found at this URL." }';
+      // ── Social / video URLs ─────────────────────────────────────────────
+      // Old behaviour blindly handed the bare URL to Gemini and hoped its
+      // training data covered the post — for Instagram in particular that
+      // meant the model invented plausible-but-wrong recipes (the bug the
+      // user was reporting). New behaviour: actually fetch the public
+      // metadata (og:title / og:description / og:image / JSON-LD) for the
+      // post, hand THAT to Gemini, and refuse to invent when the metadata
+      // is empty. Instagram + TikTok + YouTube all expose enough public
+      // og:tags via Mozilla-UA fetches to recover the post caption.
+      final extracted = await _extractSocialMetadata(trimmedUrl);
+      if (extracted == null || extracted.trim().length < 40) {
+        // We could not pull a real caption — bail with a friendly error
+        // rather than letting Gemini hallucinate a recipe.
+        throw const ScraperException(
+          'Could not read this post. Social platforms (Instagram, TikTok, '
+          'YouTube, Facebook) often hide post captions from non-logged-in '
+          'visitors.\n\n'
+          'Try:\n• Copy the caption text directly and use Paste Text\n'
+          '• Take a screenshot and use the camera scanner',
+        );
+      }
+      pageText = 'SOCIAL POST METADATA (from $trimmedUrl):\n\n$extracted\n\n'
+          'IMPORTANT: Only return a recipe if the metadata above contains '
+          'an explicit list of ingredients AND steps. If it only contains '
+          'a title, a vague caption, hashtags, or a description without '
+          'real ingredient quantities, return '
+          '{ "error": "No recipe found at this URL." } instead of guessing.';
     } else {
       // ── Standard sites: fetch the HTML ourselves ──────────────────────
       try {
@@ -111,10 +134,121 @@ class ScraperService {
 
     final rawJson = await _callGemini(
       'Extract the recipe from the following source and return it in the '
-      'required JSON format with all South African localization rules applied.\n\n'
+      'required JSON format with all South African localization rules applied.'
+      '${VeganMode.promptDirective}\n\n'
       '$pageText',
     );
-    return _parseRecipe(rawJson, sourceUrl: trimmedUrl);
+    final recipe = _parseRecipe(rawJson, sourceUrl: trimmedUrl);
+    return recipe;
+  }
+
+  /// Fetches a social post (Instagram, TikTok, YouTube, Facebook, X) and
+  /// extracts the public-facing metadata: og:title, og:description, JSON-LD
+  /// `description`, and `<title>`. Returns null when nothing meaningful can
+  /// be recovered so the caller can refuse the request instead of letting
+  /// Gemini hallucinate a recipe.
+  Future<String?> _extractSocialMetadata(String url) async {
+    Uri target;
+    try {
+      target = Uri.parse(url);
+    } catch (_) {
+      return null;
+    }
+
+    // Instagram serves a fuller caption on the public `/embed/captioned/`
+    // endpoint than on the main post URL — try that first when applicable.
+    final host = target.host.toLowerCase();
+    final candidates = <Uri>[];
+    if (host.contains('instagram.com')) {
+      final segs = target.pathSegments
+          .where((s) => s.isNotEmpty)
+          .toList(growable: false);
+      // Match /p/{id}/, /reel/{id}/, /tv/{id}/
+      for (var i = 0; i < segs.length - 1; i++) {
+        final kind = segs[i];
+        if (kind == 'p' || kind == 'reel' || kind == 'tv') {
+          final id = segs[i + 1];
+          candidates.add(
+            Uri.parse('https://www.instagram.com/$kind/$id/embed/captioned/'),
+          );
+          break;
+        }
+      }
+    }
+    candidates.add(target);
+
+    for (final uri in candidates) {
+      try {
+        final res = await http.get(uri, headers: {
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 10; Mobile) '
+              'AppleWebKit/537.36 (KHTML, like Gecko) '
+              'Chrome/120.0.0.0 Mobile Safari/537.36',
+          'Accept':          'text/html,application/xhtml+xml,*/*',
+          'Accept-Language': 'en-ZA,en;q=0.9',
+          'Accept-Encoding': 'identity',
+        }).timeout(const Duration(seconds: 15));
+        if (res.statusCode != 200) continue;
+        final body = res.body;
+        final parts = <String>[];
+
+        String? og(String prop) {
+          final m = RegExp(
+            '<meta[^>]+(?:property|name)=["\']'
+            '(?:og:)?' + RegExp.escape(prop) + '["\'][^>]+content=["\']([^"\']+)["\']',
+            caseSensitive: false,
+          ).firstMatch(body);
+          if (m != null) return m.group(1)?.trim();
+          // Try the reversed attribute order too.
+          final m2 = RegExp(
+            '<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']'
+            '(?:og:)?' + RegExp.escape(prop) + '["\']',
+            caseSensitive: false,
+          ).firstMatch(body);
+          return m2?.group(1)?.trim();
+        }
+
+        final title  = og('title');
+        final desc   = og('description');
+        final docTitle = RegExp(r'<title[^>]*>([\s\S]*?)</title>',
+                caseSensitive: false)
+            .firstMatch(body)
+            ?.group(1)
+            ?.trim();
+
+        // Instagram embed pages put the caption inside <div class="Caption">
+        final embedCaption = RegExp(
+          r'<div[^>]+class="[^"]*Caption[^"]*"[^>]*>([\s\S]*?)</div>',
+          caseSensitive: false,
+        ).firstMatch(body)?.group(1);
+
+        // JSON-LD blocks frequently carry the full recipe payload on TikTok
+        // and YouTube; pluck `description` and `recipeIngredient` when present.
+        for (final m in RegExp(
+                "<script[^>]+type=[\"']application/ld\\+json[\"'][^>]*>"
+                "([\\s\\S]*?)</script>",
+                caseSensitive: false)
+            .allMatches(body)) {
+          final raw = m.group(1);
+          if (raw == null) continue;
+          parts.add('JSON-LD: ${_stripHtml(raw)}');
+        }
+
+        if (title != null && title.isNotEmpty)         parts.add('TITLE: $title');
+        if (docTitle != null && docTitle.isNotEmpty)   parts.add('PAGE TITLE: $docTitle');
+        if (desc != null && desc.isNotEmpty)           parts.add('DESCRIPTION: $desc');
+        if (embedCaption != null && embedCaption.trim().isNotEmpty) {
+          parts.add('CAPTION: ${_stripHtml(embedCaption)}');
+        }
+
+        if (parts.isEmpty) continue;
+        var joined = parts.join('\n\n');
+        if (joined.length > 12000) joined = joined.substring(0, 12000);
+        return joined;
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
   }
 
   /// Strips HTML tags and collapses whitespace to get readable plain text.
@@ -141,13 +275,38 @@ class ScraperService {
     return text;
   }
 
+  /// Generates a full recipe from a user-typed name (e.g. "chicken curry",
+  /// "vegan bobotie"). No source URL — just hands the title to Gemini under
+  /// the same SA-localisation system prompt as the scrapers and parses the
+  /// resulting JSON into a [Recipe]. Honours VeganMode like every other
+  /// generation path.
+  Future<Recipe> generateRecipeFromName(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw const ScraperException(
+          'Type a recipe name first — e.g. "Chicken Curry".');
+    }
+    if (_apiKey.isEmpty) return _mockParsedRecipe;
+    final rawJson = await _callGemini(
+      'Generate a complete South African recipe for "$trimmed". Include a '
+      'realistic ingredient list with quantities in SA metric units, and '
+      'step-by-step cooking instructions an everyday home cook can follow. '
+      'Apply every South African localisation rule from the system prompt.'
+      '${VeganMode.promptDirective}',
+    );
+    final recipe = _parseRecipe(rawJson, sourceUrl: null);
+    return recipe;
+  }
+
   Future<Recipe> parseRawText(String text) async {
     if (text.trim().isEmpty) throw const ScraperException('Please paste some recipe text first.');
     if (_apiKey.isEmpty) return _mockParsedRecipe;
     final rawJson = await _callGemini(
-      'Extract the recipe from this raw text and apply all South African localization rules:\n\n$text',
+      'Extract the recipe from this raw text and apply all South African '
+      'localization rules:${VeganMode.promptDirective}\n\n$text',
     );
-    return _parseRecipe(rawJson, sourceUrl: null);
+    final recipe = _parseRecipe(rawJson, sourceUrl: null);
+    return recipe;
   }
 
   /// Extracts a recipe from [bytes] — a photo of a cookbook page, handwritten
@@ -168,7 +327,8 @@ class ScraperService {
     if (_apiKey.isEmpty) return _mockScrapedRecipe(null);
     // Surface errors so the user sees what went wrong
     final rawJson = await _callGeminiWithImage(bytes, mimeType: mimeType);
-    return _parseRecipe(rawJson, sourceUrl: null);
+    final recipe = _parseRecipe(rawJson, sourceUrl: null);
+    return recipe;
   }
 
   // ── System prompt ───────────────────────────────────────────────────────────
@@ -210,6 +370,14 @@ RULE 2 — INGREDIENTS
 - "name" must always be the ORIGINAL term used in the source content.
 - "localizedName" must be the standard South African equivalent if it differs.
   Leave localizedName as null if the term is already commonly used in South Africa.
+- ONE INGREDIENT PER OBJECT. Never combine two distinct ingredients into
+  a single object. "1 cup flour and 1 cup sugar" → TWO objects. "Salt,
+  pepper, paprika" → THREE objects. The only exceptions where a single
+  object is correct are the natural paired SA phrases "salt and pepper
+  to taste" and "oil and butter for frying" — anything else must split.
+- Each ingredient name field is a NOUN PHRASE for one item only. It
+  must NOT contain " and ", " plus ", " & ", commas separating items,
+  or " or " (e.g. "milk or cream") — use the first option in those cases.
 
 South African localization reference (not exhaustive — use your knowledge):
   Cilantro           → Coriander
@@ -391,7 +559,7 @@ You may receive an image file instead of a URL or text. When this happens:
             'This is a photo of a recipe — it may be a cookbook page, handwritten note, '
             'or a printed recipe card. Perform OCR to extract all visible text, then '
             'format it into the required JSON schema. Apply all South African '
-            'localization rules as instructed.',
+            'localization rules as instructed.${VeganMode.promptDirective}',
           ),
         ]),
       ]);
@@ -441,6 +609,19 @@ You may receive an image file instead of a URL or text. When this happens:
 
   // ── Parsing ─────────────────────────────────────────────────────────────────
 
+  // ── Removed image-lookup pipeline ─────────────────────────────────
+  // The auto-fetch (curated maps, Wikipedia, Commons, Pixabay) was
+  // ripped on 2026-06-23 because the matches were unreliable for SA
+  // dishes. The UI now falls back to emoji/initials/gradient cards.
+  // Recipe.imageUrl is preserved on the model so user-uploaded photos
+  // (community feed posts) keep working.
+  //
+  // Below was: _imageCache, _saDirectAssets, _saWikiArticles,
+  // _saTranslations, _toEnglishQuery, _coreIngredient,
+  // fetchImageForTitle, _curatedWikiSlug, _curatedAssetUrl,
+  // _pixabayFood, Wikipedia/Commons thumb fetchers, _extractOgImage.
+
+
   Recipe _parseRecipe(String rawJson, {required String? sourceUrl}) {
     late final Map<String, dynamic> data;
 
@@ -458,7 +639,15 @@ You may receive an image file instead of a URL or text. When this happens:
     }
 
     try {
-      final recipe = Recipe.fromJson({...data, 'sourceUrl': sourceUrl});
+      var recipe = Recipe.fromJson({...data, 'sourceUrl': sourceUrl});
+
+      // Defensive splitter: even with the system prompt's "one
+      // ingredient per object" rule, Gemini occasionally returns
+      // "flour and sugar" or "carrots, potatoes" as a single row, which
+      // the UI then renders as a stuffed line. Split unambiguous
+      // multi-item names into separate Ingredient objects so the
+      // recipe view always shows one item per row.
+      recipe = _splitMergedIngredients(recipe);
 
       // Guard: if Gemini returned a recipe with no ingredients AND no
       // instructions, treat it as a failure so we show an error instead
@@ -479,6 +668,48 @@ You may receive an image file instead of a URL or text. When this happens:
         'Could not read the recipe data. Please try again.\n\nDetails: $e',
       );
     }
+  }
+
+  /// Recognises the two SA-cooking paired phrases that legitimately stay
+  /// in a single ingredient name. Anything else with " and " / ", " in
+  /// the middle of the name gets split.
+  static bool _isPairedPhrase(String lower) {
+    return lower.contains('salt and pepper')
+        || lower.contains('salt & pepper')
+        || lower.contains('oil and butter')
+        || lower.contains('oil & butter');
+  }
+
+  /// Splits Ingredient.name fields that contain multiple distinct items
+  /// into separate Ingredient objects. Conservative: a row only gets
+  /// split when it has NO quantity / unit (the merged case the AI
+  /// produces almost always lacks both), and when at least one " and "
+  /// / "," / " & " divider sits in the middle of the string.
+  Recipe _splitMergedIngredients(Recipe recipe) {
+    final out = <Ingredient>[];
+    for (final ing in recipe.ingredients) {
+      final hasQty  = ing.quantity != null || (ing.unit?.isNotEmpty ?? false);
+      final lower   = ing.name.toLowerCase();
+      final mergedDivider = !_isPairedPhrase(lower) && (
+          RegExp(r'\s+and\s+').hasMatch(lower) ||
+          RegExp(r'\s*,\s+').hasMatch(lower)   ||
+          RegExp(r'\s+&\s+').hasMatch(lower));
+      if (!hasQty && mergedDivider) {
+        final parts = ing.name
+            .split(RegExp(r'\s+and\s+|\s*,\s+|\s+&\s+', caseSensitive: false))
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList(growable: false);
+        if (parts.length >= 2) {
+          for (final p in parts) {
+            out.add(Ingredient(name: p));
+          }
+          continue;
+        }
+      }
+      out.add(ing);
+    }
+    return recipe.copyWith(ingredients: out);
   }
 
   // ── Mock mode ────────────────────────────────────────────────────────────────

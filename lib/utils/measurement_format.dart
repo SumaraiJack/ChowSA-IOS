@@ -201,8 +201,16 @@ String formatIngredientMeasure(Ingredient ingredient) {
   // ── Fallthrough — keep whatever we were given so we never silently
   // drop a measurement. Counts ("1 large egg") land here with unit
   // = "large" or unit = null; we render qty + unit as-is.
+  //
+  // Defensive dedupe: when the AI puts the same noun in both unit and
+  // name (e.g. `unit:"bay leaves", name:"bay leaves"`) the recipe used
+  // to render "2 bay leaves bay leaves". Drop the unit when it's a
+  // case-insensitive prefix/suffix of the ingredient name.
   if (qty != null && unit != null && unit.isNotEmpty) {
-    return '${_trimZero(qty)} ${unit.trim()}';
+    final u = unit.trim();
+    final n = (ingredient.displayName).toLowerCase();
+    if (n.contains(u.toLowerCase())) return _trimZero(qty);
+    return '${_trimZero(qty)} $u';
   }
   if (qty != null) return _trimZero(qty);
   if (unit != null && unit.isNotEmpty) return unit.trim();

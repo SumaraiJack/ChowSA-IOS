@@ -379,7 +379,9 @@ class _MainNavigationHubState extends State<MainNavigationHub> {
         _pendingListName      = null;
       });
 
-  void _navigateToTab(int index) => setState(() => _currentIndex = index);
+  void _navigateToTab(int index) {
+    setState(() => _currentIndex = index);
+  }
 
   /// Opens InboxScreen directly from any tab (e.g. the home screen inbox icon)
   void _openInboxFromHome(BuildContext context) {
@@ -526,11 +528,12 @@ class _MainNavigationHubState extends State<MainNavigationHub> {
           // Require a meaningful velocity to avoid accidental swipes
           if (details.primaryVelocity == null) return;
           if (details.primaryVelocity! < -300) {
-            // Swipe left → next tab
-            if (_currentIndex < 4) setState(() => _currentIndex++);
+            // Swipe left → next tab. Cap matches the number of
+            // destinations (Home, Pantry, Shopping, Community, Profile) minus one.
+            if (_currentIndex < 4) _navigateToTab(_currentIndex + 1);
           } else if (details.primaryVelocity! > 300) {
             // Swipe right → previous tab
-            if (_currentIndex > 0) setState(() => _currentIndex--);
+            if (_currentIndex > 0) _navigateToTab(_currentIndex - 1);
           }
         },
         behavior: HitTestBehavior.translucent,
@@ -611,7 +614,7 @@ class _MainNavigationHubState extends State<MainNavigationHub> {
           ),
           child: NavigationBar(
             selectedIndex:         _currentIndex,
-            onDestinationSelected: (i) => setState(() => _currentIndex = i),
+            onDestinationSelected: _navigateToTab,
             destinations: [
           const NavigationDestination(
             icon:         Icon(Icons.soup_kitchen_outlined),

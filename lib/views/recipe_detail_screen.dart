@@ -677,15 +677,17 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen>
       padding:    const EdgeInsets.fromLTRB(20, 24, 20, 48),
       children: [
 
+        // Hero image was auto-resolved from Wikipedia/Pixabay — feature
+        // ripped on 2026-06-23 (unreliable matches). Reinstate by
+        // restoring _imageUrl + fetchImageForTitle if needed later.
+
         // ── Source link ───────────────────────────────────────────────────────
         if (widget.recipe.sourceUrl != null) ...[
           _SourceChip(url: widget.recipe.sourceUrl!),
           const SizedBox(height: 20),
         ],
 
-        // ── Loadshedding badge ─────────────────────────────────────────────────
-        _LoadsheddingBanner(friendly: widget.recipe.isLoadsheddingFriendly),
-        const SizedBox(height: 28),
+        const SizedBox(height: 8),
 
         // ── Ingredients section ───────────────────────────────────────────────
         _SectionHeader(
@@ -1355,7 +1357,12 @@ class _TimelineStepRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
 
-    return IntrinsicHeight(
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: IntrinsicHeight(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1461,6 +1468,8 @@ class _TimelineStepRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+        ),
       ),
     );
   }
@@ -1865,39 +1874,6 @@ class _SourceChip extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _LoadsheddingBanner extends StatelessWidget {
-  const _LoadsheddingBanner({required this.friendly});
-
-  final bool friendly;
-
-  @override
-  Widget build(BuildContext context) {
-    final bg    = friendly ? _kForest                : const Color(0xFF2C2C2E);
-    final fg    = friendly ? const Color(0xFF6FCF97) : const Color(0xFF98989F);
-    final icon  = friendly ? Icons.local_fire_department_rounded : Icons.bolt_rounded;
-    final label = friendly ? 'Braai-ready — no electricity needed' : 'Requires electricity';
-
-    return Container(
-      padding:    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(16)),
-      child: Row(
-        children: [
-          Icon(icon, color: fg, size: 18),
-          const SizedBox(width: 10),
-          Text(
-            label,
-            style: TextStyle(
-              color:      fg,
-              fontWeight: FontWeight.w700,
-              fontSize:   13,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

@@ -149,6 +149,8 @@ class RecipeRepository {
       'is_loadshedding_friendly': recipe.isLoadsheddingFriendly,
       'is_braai_ready':           recipe.isBraaiReady,
       if (recipe.sourceUrl != null) 'source_url': recipe.sourceUrl,
+      if (recipe.imageUrl != null && recipe.imageUrl!.isNotEmpty)
+        'image_url': recipe.imageUrl,
       // NOTE: there's intentionally no `source` field here — the `recipes`
       // table only has `source_url` (the external URL the recipe was scraped
       // from). Writing `source` previously raised PGRST204 in PostgREST and
@@ -507,6 +509,9 @@ class RecipeRepository {
       isLoadsheddingFriendly: (row['is_loadshedding_friendly'] as bool?) ?? false,
       isBraaiReady:           (row['is_braai_ready']           as bool?) ?? false,
       sourceUrl:              src ?? id,
+      imageUrl:               (row['image_url'] as String?)?.trim().isNotEmpty == true
+                                  ? (row['image_url'] as String).trim()
+                                  : null,
       // Proper id/type fields — used by the meal planner to deep-link
       // a planned meal back to its My-Recipe detail page on tap. The
       // sourceUrl-as-id legacy is preserved above for existing callers.
@@ -514,6 +519,7 @@ class RecipeRepository {
       sourceType:             id == null ? null : 'mine',
     );
   }
+
 }
 
 class _NotAuthenticated implements Exception {

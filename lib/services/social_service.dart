@@ -173,27 +173,14 @@ class SocialService {
     }
   }
 
-  /// Returns `{likesCount, isLiked}` for a single channel message.
+  /// Legacy heart-toggle metrics. The underlying `channel_message_likes`
+  /// table was dropped on 2026-06-19 when reactions replaced the single-
+  /// heart flow, but Crashlytics still surfaces PGRST205 from older
+  /// app versions calling this. No live caller remains in the tree —
+  /// returning zero here keeps any stale binding from crashing.
   Future<Map<String, dynamic>> getChannelMessageLikeMetrics(
       String messageId) async {
-    final userId = _client.auth.currentUser?.id;
-    try {
-      final likesRes = await _client
-          .from('channel_message_likes')
-          .select('user_id')
-          .eq('message_id', messageId);
-      bool isLikedByMe = false;
-      if (userId != null) {
-        isLikedByMe = (likesRes as List)
-            .any((r) => (r as Map)['user_id'] == userId);
-      }
-      return {
-        'likesCount': (likesRes as List).length,
-        'isLiked':    isLikedByMe,
-      };
-    } catch (_) {
-      return {'likesCount': 0, 'isLiked': false};
-    }
+    return {'likesCount': 0, 'isLiked': false};
   }
 
   // ─────────────────────────────────────────────────────────────────────────

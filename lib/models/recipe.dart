@@ -11,6 +11,12 @@ class Recipe {
   final bool isBraaiReady;
   final String? sourceUrl;
 
+  /// Hero image for this recipe. Sources, in priority order:
+  ///   1. og:image of the source URL when the recipe was scraped.
+  ///   2. Wikipedia article thumbnail keyed off the title (free helper).
+  ///   3. null — UI falls back to its emoji / illustrated header.
+  final String? imageUrl;
+
   /// Optional reference id pointing back to the canonical record this
   /// recipe was instantiated from. Used by the meal planner so a tile
   /// can re-fetch full ingredients/instructions via [sourceType] when
@@ -32,6 +38,7 @@ class Recipe {
     this.sourceUrl,
     this.sourceId,
     this.sourceType,
+    this.imageUrl,
   });
 
   Map<String, dynamic> toJson() => {
@@ -43,6 +50,7 @@ class Recipe {
         'sourceUrl':              sourceUrl,
         'sourceId':               sourceId,
         'sourceType':             sourceType,
+        'imageUrl':               imageUrl,
       };
 
   factory Recipe.fromJson(Map<String, dynamic> json) => Recipe(
@@ -71,6 +79,9 @@ class Recipe {
         sourceType:
             (json['sourceType'] as String?)
             ?? (json['source_type'] as String?),
+        imageUrl:
+            (json['imageUrl'] as String?)
+            ?? (json['image_url'] as String?),
       );
 
   Recipe copyWith({
@@ -82,6 +93,7 @@ class Recipe {
     String?            sourceUrl,
     String?            sourceId,
     String?            sourceType,
+    String?            imageUrl,
   }) =>
       Recipe(
         title:                  title                  ?? this.title,
@@ -92,5 +104,6 @@ class Recipe {
         sourceUrl:              sourceUrl              ?? this.sourceUrl,
         sourceId:               sourceId               ?? this.sourceId,
         sourceType:             sourceType             ?? this.sourceType,
+        imageUrl:               imageUrl               ?? this.imageUrl,
       );
 }

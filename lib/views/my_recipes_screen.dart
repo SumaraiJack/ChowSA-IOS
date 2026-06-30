@@ -443,8 +443,6 @@ class _RecipeCard extends StatelessWidget {
     final cardBg        = cs.surfaceContainerLowest;
     final cardBorder    = cs.outlineVariant.withAlpha(160);
     final titleColor    = cs.onSurface;
-    final tagBg         = cs.secondary.withAlpha(isDark ? 60 : 26);
-    final tagText       = isDark ? cs.secondary : cs.onSurface;
 
     return GestureDetector(
       onTap: onTap,
@@ -463,15 +461,16 @@ class _RecipeCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Coloured avatar
+            // Coloured initials avatar — the legacy thumbnail (real-photo
+            // lookup ripped on 2026-06-23 alongside the rest of the auto-
+            // image pipeline).
             Container(
               width:  64,
               height: 64,
               decoration: BoxDecoration(
                 color:        color,
                 borderRadius: const BorderRadius.horizontal(
-                  left: Radius.circular(17),
-                ),
+                    left: Radius.circular(17)),
               ),
               alignment: Alignment.center,
               child: Text(
@@ -501,25 +500,7 @@ class _RecipeCard extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    if (recipe.isBraaiReady) ...[
-                      const SizedBox(height: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color:        tagBg,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          '🔥 Braai Ready',
-                          style: TextStyle(
-                            fontSize:   10,
-                            fontWeight: FontWeight.w700,
-                            color:      tagText,
-                          ),
-                        ),
-                      ),
-                    ],
+                    // Braai Ready chip hidden per user request.
                   ],
                 ),
               ),
@@ -766,7 +747,7 @@ class _RecipeDetailScreenState extends State<_RecipeDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
 
-            // ── Hero badge row ────────────────────────────────────────────────
+            // ── Hero badge row — coloured initials avatar ───────────────────
             Row(
               children: [
                 Container(
@@ -788,43 +769,12 @@ class _RecipeDetailScreenState extends State<_RecipeDetailScreen> {
                 ),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _recipe.title,
-                        style: tt.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          height:     1.2,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Wrap(
-                        spacing:    6,
-                        runSpacing: 4,
-                        children: [
-                          _DetailBadge(
-                            icon:  Icons.power_off_rounded,
-                            label: _recipe.isLoadsheddingFriendly
-                                ? 'Gas/Braai/No Power Ready'
-                                : 'Needs Power',
-                            bg: _recipe.isLoadsheddingFriendly
-                                ? _kForest
-                                : const Color(0xFF2C2C2E),
-                            fg: _recipe.isLoadsheddingFriendly
-                                ? const Color(0xFF6FCF97)
-                                : const Color(0xFF98989F),
-                          ),
-                          if (_recipe.isBraaiReady)
-                            const _DetailBadge(
-                              icon:  Icons.outdoor_grill_rounded,
-                              label: 'Braai Ready',
-                              bg:    Color(0xFFBF360C),
-                              fg:    Colors.white,
-                            ),
-                        ],
-                      ),
-                    ],
+                  child: Text(
+                    _recipe.title,
+                    style: tt.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      height:     1.2,
+                    ),
                   ),
                 ),
               ],
@@ -1085,6 +1035,7 @@ class _AddToListPill extends StatelessWidget {
   }
 }
 
+// ignore: unused_element
 class _DetailBadge extends StatelessWidget {
   const _DetailBadge({
     required this.icon,
