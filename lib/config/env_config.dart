@@ -1,4 +1,7 @@
 // lib/config/env_config.dart
+
+import 'dart:io' show Platform;
+
 //
 // Centralised environment switch for credentials that differ between
 // development and production builds (AdMob unit IDs today; add more as
@@ -47,26 +50,38 @@ abstract final class EnvConfig {
       bool.fromEnvironment('IS_PRODUCTION', defaultValue: false);
 
   // ── AdMob — App IDs ───────────────────────────────────────────────────
-  //
-  // Production App ID for ChowSA's AdMob console.
-  // (Same publisher account as the rewarded unit below: pub-4825357853521156.)
-  static const String _kProdAdMobAppId = 'ca-app-pub-4825357853521156~9984542080';
-  static const String _kTestAdMobAppId = 'ca-app-pub-3940256099942544~3347511713';
+  // Android + iOS have separate AdMob apps under pub-4825357853521156.
+  static const String _kProdAdMobAppIdAndroid = 'ca-app-pub-4825357853521156~9984542080';
+  static const String _kProdAdMobAppIdIos     = 'ca-app-pub-4825357853521156~4176851058';
+  static const String _kTestAdMobAppIdAndroid = 'ca-app-pub-3940256099942544~3347511713';
+  static const String _kTestAdMobAppIdIos     = 'ca-app-pub-3940256099942544~1458002511';
 
   /// AdMob Application ID. Used by AndroidManifest via a manifestPlaceholder
   /// AND surfaced in Dart so we can sanity-check it from main() if needed.
-  static String get adMobAppId =>
-      isProduction ? _kProdAdMobAppId : _kTestAdMobAppId;
+  static String get adMobAppId {
+    if (Platform.isIOS) {
+      return isProduction ? _kProdAdMobAppIdIos : _kTestAdMobAppIdIos;
+    }
+    return isProduction ? _kProdAdMobAppIdAndroid : _kTestAdMobAppIdAndroid;
+  }
 
   // ── AdMob — Rewarded Ad Unit IDs ──────────────────────────────────────
-  static const String _kProdRewardedAdUnitId =
+  static const String _kProdRewardedAdUnitIdAndroid =
       'ca-app-pub-4825357853521156/2264461012';
-  static const String _kTestRewardedAdUnitId =
+  static const String _kProdRewardedAdUnitIdIos =
+      'ca-app-pub-4825357853521156/2264461012'; // TODO: replace with iOS rewarded unit ID
+  static const String _kTestRewardedAdUnitIdAndroid =
       'ca-app-pub-3940256099942544/5224354917';
+  static const String _kTestRewardedAdUnitIdIos =
+      'ca-app-pub-3940256099942544/1712485313';
 
   /// Rewarded ad unit ID used by AdRewardService._loadRewardedAd().
-  static String get adMobRewardedAdUnitId =>
-      isProduction ? _kProdRewardedAdUnitId : _kTestRewardedAdUnitId;
+  static String get adMobRewardedAdUnitId {
+    if (Platform.isIOS) {
+      return isProduction ? _kProdRewardedAdUnitIdIos : _kTestRewardedAdUnitIdIos;
+    }
+    return isProduction ? _kProdRewardedAdUnitIdAndroid : _kTestRewardedAdUnitIdAndroid;
+  }
 
   // ── Sanity helper ─────────────────────────────────────────────────────
   /// Plain-English label for debug logs / Settings -> About screens.
