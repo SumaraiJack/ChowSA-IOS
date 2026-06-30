@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delete Your Account — ChowSA</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --forest:#0C351E; --amber:#E59B27; --cream:#F4F1EA; --ink:#1A1A1A; --muted:#55534E; --danger:#C62828; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',sans-serif; background:var(--cream); color:var(--ink); line-height:1.6; }
+  header { background:var(--forest); color:white; padding:24px; }
+  .top { max-width:880px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; }
+  .logo { font-family:'Bebas Neue',sans-serif; font-size:28px; letter-spacing:1px; }
+  .back { color:var(--amber); font-weight:700; font-size:14px; text-decoration:none; }
+  main { max-width:720px; margin:0 auto; padding:48px 24px 80px; }
+  h1 { font-family:'Bebas Neue',sans-serif; font-size:56px; color:var(--forest); letter-spacing:0.5px; line-height:1; margin-bottom:8px; }
+  .meta { color:var(--muted); font-size:14px; margin-bottom:32px; }
+  h2 { font-family:'Bebas Neue',sans-serif; font-size:26px; color:var(--forest); margin:32px 0 12px; letter-spacing:0.5px; }
+  p, li { font-size:15px; margin-bottom:12px; color:var(--ink); }
+  ul, ol { padding-left:22px; margin-bottom:12px; }
+  a { color:var(--amber); }
+  .card { background:white; border-radius:16px; padding:24px; border:1px solid rgba(12,53,30,0.08); margin-bottom:20px; }
+  .danger { background:#FFF3E0; border:1px solid var(--amber); border-radius:16px; padding:20px; margin:20px 0; }
+  .step { display:flex; gap:16px; margin-bottom:18px; align-items:flex-start; }
+  .step-num {
+    width:36px; height:36px; border-radius:50%;
+    background:var(--forest); color:white;
+    font-family:'Bebas Neue',sans-serif; font-size:20px;
+    display:flex; align-items:center; justify-content:center;
+    flex-shrink:0;
+  }
+  .step-text strong { display:block; margin-bottom:4px; color:var(--forest); }
+  .req-form {
+    background:white; border-radius:16px; padding:24px;
+    border:1px solid rgba(12,53,30,0.1);
+    margin-top:24px;
+  }
+  .req-form a.btn {
+    display:inline-block; background:var(--danger); color:white;
+    padding:14px 24px; border-radius:999px; font-weight:800;
+    text-decoration:none; margin-top:8px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <a href="index.html" class="logo">🥄 ChowSA</a>
+    <a href="index.html" class="back">← Back to home</a>
+  </div>
+</header>
+<main>
+  <h1>Delete Your Account</h1>
+  <p class="meta">App: ChowSA · Developer: ChowSA (Cape Town, South Africa)</p>
+
+  <div class="card">
+    <p>You can delete your ChowSA account and all associated data at any time. There are two ways: directly inside the app (fastest), or by emailing us if you've lost access.</p>
+  </div>
+
+  <h2>Method 1 — Inside the app (recommended)</h2>
+
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-text">
+      <strong>Open ChowSA</strong>
+      Sign in to the account you want to delete.
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-text">
+      <strong>Tap Profile (bottom-right)</strong>
+      Then the gear icon for Settings.
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-text">
+      <strong>Privacy & Data Settings</strong>
+      Tap "Erase My Data" at the bottom of that section.
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">4</div>
+    <div class="step-text">
+      <strong>Confirm</strong>
+      A dialog asks you to confirm. Once you tap Delete, your account is queued for permanent removal.
+    </div>
+  </div>
+
+  <h2>Method 2 — By email (if you've lost access)</h2>
+  <div class="req-form">
+    <p>If you can't sign in, email us from the address linked to your account:</p>
+    <a href="mailto:chowsa.app.support@gmail.com?subject=Account%20Deletion%20Request&body=Please%20delete%20my%20ChowSA%20account.%0A%0AAccount%20email%3A%20%0AHandle%20(if%20known)%3A%20%0AReason%20(optional)%3A%20" class="btn">Email Deletion Request →</a>
+    <p style="margin-top:14px;font-size:13px;color:var(--muted);">Include your registered email and (if you remember it) your ChowSA handle. We'll confirm receipt within 2 working days.</p>
+  </div>
+
+  <h2>What gets deleted</h2>
+  <ul>
+    <li>Your profile (name, email, avatar, handle, bio).</li>
+    <li>All recipes, pantry items, shopping lists, and meal plans you created.</li>
+    <li>All community posts, comments, and channel messages you sent.</li>
+    <li>Your friends list and shared assets.</li>
+    <li>Push notification token.</li>
+    <li>Any active Pro subscription is cancelled (no further billing).</li>
+  </ul>
+
+  <h2>What we keep</h2>
+  <ul>
+    <li><strong>Anonymous aggregate data</strong> (e.g. "how many users use load-shedding mode") — no longer linked to you.</li>
+    <li><strong>Payment records</strong> required by SA tax law (kept for 5 years, per SARS), but no card details — we never had those.</li>
+    <li><strong>Abuse logs</strong> for accounts banned for serious community violations (so the same user can't immediately re-register).</li>
+  </ul>
+
+  <h2>How long it takes</h2>
+  <p>Deletion completes within <strong>7 days</strong> of your request, in line with POPIA. You'll receive a confirmation email when it's done. After that, the deletion is permanent — we can't recover the account.</p>
+
+  <h2>Questions?</h2>
+  <p><a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a> · See our full <a href="privacy.html">Privacy Policy</a>.</p>
+</main>
+</body>
+</html>
