@@ -32,7 +32,7 @@
 </header>
 <main>
   <h1>Privacy Policy</h1>
-  <p class="meta">Last updated: <span id="date"></span></p>
+  <p class="meta">Last updated: 29 June 2026</p>
 
   <div class="card">
     <p>ChowSA ("we", "us", "the app") respects your privacy and complies with the South African <strong>Protection of Personal Information Act (POPIA)</strong> and Google Play's Data Safety requirements. This policy explains what we collect, why, and how to control it.</p>
@@ -71,7 +71,6 @@
     <li><strong>Supabase</strong> — our database & file hosting. Hosted in the EU. <a href="https://supabase.com/privacy" target="_blank">Their policy</a>.</li>
     <li><strong>Firebase (Google)</strong> — push notifications, crash reporting, analytics. <a href="https://firebase.google.com/support/privacy" target="_blank">Their policy</a>.</li>
     <li><strong>Google AdMob</strong> — non-personalised ads in the free tier. <a href="https://policies.google.com/privacy" target="_blank">Their policy</a>.</li>
-    <li><strong>TheSportsDB</strong> — public soccer fixture API for World Cup scores. No personal data is sent.</li>
     <li><strong>Google Gemini</strong> — AI recipe and pantry matching. We send the ingredient/recipe prompt only; no account identifiers.</li>
   </ul>
   <p>We never sell your personal information.</p>
@@ -91,12 +90,21 @@
   <h2>Security</h2>
   <p>Data in transit is encrypted via HTTPS/TLS. Data at rest in Supabase is encrypted with AES-256. Row-Level Security policies ensure only you (and people you explicitly share with) can read your data.</p>
 
+  <h2>Data retention</h2>
+  <ul>
+    <li><strong>Active accounts</strong>: profile, recipes, pantry, shopping lists, meal plans and community content are kept for as long as your account is active.</li>
+    <li><strong>Deleted accounts</strong>: all personal data is permanently erased within 7 days of your deletion request. See the <a href="delete-account.html">account deletion page</a> for details.</li>
+    <li><strong>Crash and analytics logs</strong>: anonymised diagnostic data is retained by Firebase Crashlytics for up to 90 days.</li>
+    <li><strong>Payment records</strong> (once Pro launches): kept for 5 years to comply with South African tax law (SARS).</li>
+    <li><strong>Abuse and moderation logs</strong>: retained for banned accounts to prevent re-registration and protect the community.</li>
+    <li><strong>Aggregate, anonymised statistics</strong> (e.g. how many users use a given feature): retained indefinitely as they no longer identify you.</li>
+  </ul>
+
   <h2>Changes</h2>
   <p>We'll update this page if anything changes materially and surface a notice in-app. Your continued use after a change means you accept the updated policy.</p>
 
   <h2>Contact</h2>
-  <p>Questions? <a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a> or <a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a> for privacy-specific requests.</p>
+  <p>Questions or privacy-specific requests? <a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a>.</p>
 </main>
-<script>document.getElementById('date').textContent = new Date().toLocaleDateString('en-ZA', {year:'numeric',month:'long',day:'numeric'});</script>
 </body>
 </html>
