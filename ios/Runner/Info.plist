@@ -4,6 +4,14 @@
 	<dict>
 		<key>CADisableMinimumFrameDurationOnPhone</key>
 		<true/>
+		<key>GADApplicationIdentifier</key>
+		<string>ca-app-pub-3940256099942544~1458002511</string>
+		<key>NSUserTrackingUsageDescription</key>
+		<string>This identifier will be used to deliver personalized ads to you.</string>
+		<key>NSCameraUsageDescription</key>
+		<string>ChowSA uses the camera to scan recipe photos.</string>
+		<key>NSPhotoLibraryUsageDescription</key>
+		<string>ChowSA needs photo access to import recipe images.</string>
 		<key>NSLocationWhenInUseUsageDescription</key>
 		<string>ChowSA uses your location to show your nearest community hub — local food trucks, gatherings, grocery deals, and posts from your neighbourhood.</string>
 		<key>CFBundleDevelopmentRegion</key>
