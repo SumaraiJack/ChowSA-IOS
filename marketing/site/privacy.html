@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — ChowSA</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --forest:#0C351E; --amber:#E59B27; --cream:#F4F1EA; --ink:#1A1A1A; --muted:#55534E; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',sans-serif; background:var(--cream); color:var(--ink); line-height:1.6; }
+  header { background:var(--forest); color:white; padding:24px; }
+  .top { max-width:880px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; }
+  .logo { font-family:'Bebas Neue',sans-serif; font-size:28px; letter-spacing:1px; }
+  .back { color:var(--amber); font-weight:700; font-size:14px; text-decoration:none; }
+  main { max-width:880px; margin:0 auto; padding:48px 24px 80px; }
+  h1 { font-family:'Bebas Neue',sans-serif; font-size:56px; color:var(--forest); letter-spacing:0.5px; line-height:1; margin-bottom:8px; }
+  .meta { color:var(--muted); font-size:14px; margin-bottom:32px; }
+  h2 { font-family:'Bebas Neue',sans-serif; font-size:28px; color:var(--forest); margin:32px 0 12px; letter-spacing:0.5px; }
+  p, li { font-size:15px; margin-bottom:12px; color:var(--ink); }
+  ul { padding-left:22px; margin-bottom:12px; }
+  a { color:var(--amber); }
+  .card { background:white; border-radius:16px; padding:24px; border:1px solid rgba(12,53,30,0.08); margin-bottom:20px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <a href="index.html" class="logo">🥄 ChowSA</a>
+    <a href="index.html" class="back">← Back to home</a>
+  </div>
+</header>
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="meta">Last updated: <span id="date"></span></p>
+
+  <div class="card">
+    <p>ChowSA ("we", "us", "the app") respects your privacy and complies with the South African <strong>Protection of Personal Information Act (POPIA)</strong> and Google Play's Data Safety requirements. This policy explains what we collect, why, and how to control it.</p>
+  </div>
+
+  <h2>What we collect</h2>
+  <ul>
+    <li><strong>Account info</strong>: email, display name, avatar, optional handle. Used to authenticate you and power social features.</li>
+    <li><strong>Location</strong>: approximate (GPS, network) — used to resolve your local community hub, suburb-scoped recipes, and food-truck pins. Never sold.</li>
+    <li><strong>Pantry & recipes</strong>: ingredients you add, recipes you save, shopping lists, meal plans. Stored against your account.</li>
+    <li><strong>Photos</strong>: fridge scans, recipe photos, profile pictures you upload. Stored in Supabase Storage.</li>
+    <li><strong>Community content</strong>: posts, comments, channel messages, @mentions you publish in suburb hubs.</li>
+    <li><strong>Device push token</strong>: an anonymous FCM token used to deliver notifications you opted into.</li>
+    <li><strong>Crash & performance data</strong>: anonymous diagnostic data (via Firebase Crashlytics) so we can fix bugs.</li>
+    <li><strong>Advertising ID</strong>: used by Google AdMob to serve non-personalised ads in the free tier. Reset or opt-out via your Android settings.</li>
+  </ul>
+
+  <h2>What we do NOT collect</h2>
+  <ul>
+    <li>Precise background location (we read GPS only while the app is open).</li>
+    <li>Contacts, SMS, call logs, microphone, or browsing history.</li>
+    <li>Payment card details — ChowSA is free at launch and does not process any payments. When the optional Pro tier ships in a future update, it will be billed entirely by Google Play Billing; we will receive only an entitlement status, never card details.</li>
+  </ul>
+
+  <h2>How we use it</h2>
+  <ul>
+    <li>Power the app's features (pantry, recipes, community, shopping, meal planning).</li>
+    <li>Deliver push notifications (mentions, shared lists, friend invites) you opted into.</li>
+    <li>Match your suburb to a community hub and surface localised content.</li>
+    <li>Detect crashes and improve stability.</li>
+    <li>Serve non-personalised ads in the free tier.</li>
+  </ul>
+
+  <h2>Who we share with</h2>
+  <ul>
+    <li><strong>Supabase</strong> — our database & file hosting. Hosted in the EU. <a href="https://supabase.com/privacy" target="_blank">Their policy</a>.</li>
+    <li><strong>Firebase (Google)</strong> — push notifications, crash reporting, analytics. <a href="https://firebase.google.com/support/privacy" target="_blank">Their policy</a>.</li>
+    <li><strong>Google AdMob</strong> — non-personalised ads in the free tier. <a href="https://policies.google.com/privacy" target="_blank">Their policy</a>.</li>
+    <li><strong>TheSportsDB</strong> — public soccer fixture API for World Cup scores. No personal data is sent.</li>
+    <li><strong>Google Gemini</strong> — AI recipe and pantry matching. We send the ingredient/recipe prompt only; no account identifiers.</li>
+  </ul>
+  <p>We never sell your personal information.</p>
+
+  <h2>Your rights under POPIA</h2>
+  <ul>
+    <li><strong>Access</strong>: request a copy of everything we hold about you — email <a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a>.</li>
+    <li><strong>Correction</strong>: edit your profile in-app, or email us.</li>
+    <li><strong>Deletion</strong>: tap Settings → Privacy & Data Settings → Delete Account, OR visit our <a href="delete-account.html">account deletion page</a>. Removal is permanent and completes within 7 days.</li>
+    <li><strong>Object</strong>: opt out of push notifications in Settings, or revoke location permission in Android settings.</li>
+    <li><strong>Lodge a complaint</strong>: with the South African Information Regulator at <a href="https://inforegulator.org.za" target="_blank">inforegulator.org.za</a>.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>ChowSA is intended for users aged 13 and over. We do not knowingly collect personal information from children under 13.</p>
+
+  <h2>Security</h2>
+  <p>Data in transit is encrypted via HTTPS/TLS. Data at rest in Supabase is encrypted with AES-256. Row-Level Security policies ensure only you (and people you explicitly share with) can read your data.</p>
+
+  <h2>Changes</h2>
+  <p>We'll update this page if anything changes materially and surface a notice in-app. Your continued use after a change means you accept the updated policy.</p>
+
+  <h2>Contact</h2>
+  <p>Questions? <a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a> or <a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a> for privacy-specific requests.</p>
+</main>
+<script>document.getElementById('date').textContent = new Date().toLocaleDateString('en-ZA', {year:'numeric',month:'long',day:'numeric'});</script>
+</body>
+</html>

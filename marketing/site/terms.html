@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms of Service — ChowSA</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --forest:#0C351E; --amber:#E59B27; --cream:#F4F1EA; --ink:#1A1A1A; --muted:#55534E; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',sans-serif; background:var(--cream); color:var(--ink); line-height:1.6; }
+  header { background:var(--forest); color:white; padding:24px; }
+  .top { max-width:880px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; }
+  .logo { font-family:'Bebas Neue',sans-serif; font-size:28px; letter-spacing:1px; }
+  .back { color:var(--amber); font-weight:700; font-size:14px; text-decoration:none; }
+  main { max-width:880px; margin:0 auto; padding:48px 24px 80px; }
+  h1 { font-family:'Bebas Neue',sans-serif; font-size:56px; color:var(--forest); letter-spacing:0.5px; line-height:1; margin-bottom:8px; }
+  .meta { color:var(--muted); font-size:14px; margin-bottom:32px; }
+  h2 { font-family:'Bebas Neue',sans-serif; font-size:28px; color:var(--forest); margin:32px 0 12px; letter-spacing:0.5px; }
+  p, li { font-size:15px; margin-bottom:12px; color:var(--ink); }
+  ul { padding-left:22px; margin-bottom:12px; }
+  a { color:var(--amber); }
+  .card { background:white; border-radius:16px; padding:24px; border:1px solid rgba(12,53,30,0.08); margin-bottom:20px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <a href="index.html" class="logo">🥄 ChowSA</a>
+    <a href="index.html" class="back">← Back to home</a>
+  </div>
+</header>
+<main>
+  <h1>Terms of Service</h1>
+  <p class="meta">Last updated: <span id="date"></span></p>
+
+  <div class="card">
+    <p>Welcome to ChowSA. By creating an account or using the app you agree to these terms. Heads up: this is a real legal agreement under South African law. Read it.</p>
+  </div>
+
+  <h2>1. Who we are</h2>
+  <p>ChowSA is a South African mobile application offering recipes, AI pantry matching, shopping lists, meal planning, and a hyperlocal community feed. Operated from Cape Town, South Africa.</p>
+
+  <h2>2. Your account</h2>
+  <ul>
+    <li>You must be at least 13 to use ChowSA.</li>
+    <li>You're responsible for everything done with your account — keep your login secure.</li>
+    <li>One person, one account. No bots, scraping, or automated abuse.</li>
+    <li>We may suspend or delete accounts that breach these terms or our Community Guidelines.</li>
+  </ul>
+
+  <h2>3. Acceptable use</h2>
+  <p>Don't be a doos. Specifically:</p>
+  <ul>
+    <li>No harassment, hate speech, threats, or discrimination of any kind.</li>
+    <li>No nudity, sexual content, or content sexualising minors.</li>
+    <li>No spam, scams, MLM pitches, or fake "deals" in the community hubs.</li>
+    <li>No selling regulated goods (alcohol, tobacco, weapons, drugs, illegal goods).</li>
+    <li>No impersonating others, no doxxing, no sharing private information.</li>
+    <li>No copyrighted recipes/content that isn't yours.</li>
+  </ul>
+  <p>Report anything dodgy via the in-app report button. We typically respond within 48 hours.</p>
+
+  <h2>4. Your content</h2>
+  <p>Recipes, photos, comments, posts, shopping lists — whatever you create stays yours. By posting it to ChowSA you grant us a non-exclusive licence to display it inside the app to other users (especially in your suburb hub). You can delete your content at any time.</p>
+
+  <h2>5. ChowSA Pro subscription</h2>
+  <p>ChowSA is 100% free at launch — no subscription, no card, no paywall. Every feature is unlocked for every user. An optional Pro tier may launch in a future update via Google Play Billing; if and when it does, the pricing, renewal, and cancellation terms will be published here and inside the app before any charge can be made.</p>
+
+  <h2>6. AI features</h2>
+  <p>Recipe suggestions and pantry detection use Google Gemini. We do our best, but AI gets things wrong. <strong>Always check ingredient lists, allergens, and cooking instructions yourself.</strong> ChowSA isn't liable for AI hallucinations, missed allergens, or cooking accidents.</p>
+
+  <h2>7. No warranty</h2>
+  <p>ChowSA is provided "as is". We don't guarantee the app is always available, bug-free, or that any specific recipe will taste good to your auntie. Use at your own risk.</p>
+
+  <h2>8. Liability</h2>
+  <p>To the maximum extent allowed by South African law, ChowSA is not liable for indirect, incidental, or consequential damages — including burnt potjies, food poisoning from miscooked chicken, missed braais, or hurt feelings in the community feed. Our total liability in any 12-month period is capped at the amount you paid us during that period (R0 if you're on the free tier).</p>
+
+  <h2>9. Changes</h2>
+  <p>We may update these terms occasionally. Material changes get surfaced in-app. Continued use means you accept the updated terms.</p>
+
+  <h2>10. Governing law</h2>
+  <p>These terms are governed by the laws of the Republic of South Africa. Disputes are subject to the jurisdiction of the South African courts.</p>
+
+  <h2>11. Contact</h2>
+  <p><a href="mailto:chowsa.app.support@gmail.com">chowsa.app.support@gmail.com</a></p>
+</main>
+<script>document.getElementById('date').textContent = new Date().toLocaleDateString('en-ZA', {year:'numeric',month:'long',day:'numeric'});</script>
+</body>
+</html>
