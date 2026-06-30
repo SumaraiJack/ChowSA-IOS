@@ -69,7 +69,7 @@ abstract final class EnvConfig {
   static const String _kProdRewardedAdUnitIdAndroid =
       'ca-app-pub-4825357853521156/2264461012';
   static const String _kProdRewardedAdUnitIdIos =
-      'ca-app-pub-4825357853521156/2264461012'; // TODO: replace with iOS rewarded unit ID
+      'ca-app-pub-4825357853521156/1808075102';
   static const String _kTestRewardedAdUnitIdAndroid =
       'ca-app-pub-3940256099942544/5224354917';
   static const String _kTestRewardedAdUnitIdIos =
